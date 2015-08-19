@@ -1,0 +1,964 @@
+#!/usr/bin/env python3
+"""Linger - Message queue and pubsub service with HTTP API
+
+Copyright 2015 Jacob Sondergaard
+Licensed under the Apache License, Version 2.0
+"""
+
+import heapq
+import itertools
+import logging
+import os
+import os.path
+import pickle
+import platform
+import re
+import signal
+import sys
+import time
+import traceback
+import uuid
+
+import tornado.concurrent
+import tornado.httpserver
+import tornado.ioloop
+import tornado.web
+
+from tornado.gen import coroutine
+from tornado.options import (define, options, parse_config_file,
+                             parse_command_line)
+
+__version__ = '0.1.0'
+
+
+define('config', type=str, help='path to config file',
+       callback=lambda path: parse_config_file(path, final=False))
+define('debug', default=False, help='run in debug mode', type=bool,
+       group='application')
+define('port', default=8989, help='run on the given port', type=int,
+       group='application')
+define('shutdown_timeout', default=1, type=float, help='grace time in seconds'
+       ', following stop of the http server, before stopping the ioloop',
+       group='application')
+define('binlog_dir', default=None, type=str, help='binlog directory',
+       group='application')
+
+
+class PQueue:
+    """A simple priority queue, implemented using heapq.
+    It's assumed that items are an increasing series of integers.
+    """
+
+    def __init__(self):
+        self.pq = []
+        self.entry_finder = {}
+
+    def put(self, item, priority):
+        """Put item in the queue with the given priority.
+        If the item is already in the queue, the priority is updated.
+        """
+        if item in self.entry_finder:
+            # remove the item
+            self.remove(item)
+        entry = [priority, item, False]
+        self.entry_finder[item] = entry
+        heapq.heappush(self.pq, entry)
+
+    def remove(self, item):
+        """Remove item from the queue"""
+        entry = self.entry_finder.pop(item)
+        entry[-1] = True
+
+    def pop(self):
+        """Pop next item from the queue"""
+        while self.pq:
+            priority, item, removed = heapq.heappop(self.pq)
+            if not removed:
+                del self.entry_finder[item]
+                return item
+        raise KeyError('pop from an empty priority queue')
+
+    def peek(self):
+        """Peek at the first item in the queue"""
+        while self.pq:
+            priority, item, removed = self.pq[0]
+            if removed:
+                priority, item, removed = heapq.heappop(self.pq)
+            else:
+                return item
+        raise KeyError('pop from an empty priority queue')
+
+    def __contains__(self, item):
+        return item in self.entry_finder
+
+    def __nonzero__(self):
+        return bool(self.entry_finder)
+
+    def __len__(self):
+        return len(self.entry_finder)
+
+
+class Listeners:
+    """A class for notifying channel listeners."""
+
+    # time in sec to keep a future
+    time_out = 120.0  # 2 min in seconds
+
+    def __init__(self):
+        self.futures = []
+
+        # the interval in ms between pruning callbacks (in ms)
+        self.periodic_callback = tornado.ioloop.PeriodicCallback(
+                self.heartbeat, 2000.0)
+        self.periodic_callback.start()
+
+    def now_ms(self):
+        """Time in miliseconds"""
+        return int(time.time() * 1000)
+
+    def stop(self):
+        """Stop the heartbeats"""
+        self.periodic_callback.stop()
+
+    def heartbeat(self):
+        """Prune expired callbacks"""
+        if not self.futures:
+            return
+        # expired callbacks get None
+        now = time.time()
+        keep = []
+        for future, ts in self.futures:
+            if ts < now:
+                future.set_result(None)
+            else:
+                keep.append((future, ts))
+        self.futures = keep
+
+    def add_future(self, future):
+        """Register a future for delivering a message to a listener"""
+        self.futures.append((future, time.time() + self.time_out))
+
+    def deliver(self, msg):
+        """Deliver message to first listener"""
+        if not self.futures:
+            return False
+        future, _ = self.futures.pop(0)
+        future.set_result(msg)
+        logging.debug('Delivering message {}'.format(msg['id']))
+        return True
+
+    def __nonzero__(self):
+        return bool(self.futures)
+
+    def __len__(self):
+        return len(self.futures)
+
+
+class Binlog:
+
+    binlog_base_name = 'linger-binlog'
+    binlog_max_size = 1000000  # 1 MB in bytes
+
+    Event = {'msg': 1, 'sub': 2}
+    Action = {'add': 1, 'delete': 2, 'hide': 3, 'show': 4}
+
+    def __init__(self, linger_queue):
+
+        self.binlog_dir = options.binlog_dir
+        self.current_binlog_no = 0
+        self.binlog = None
+        self.binlog_file = None
+
+        if self.binlog_dir is not None and not os.path.exists(self.binlog_dir):
+            logging.warning('The binlog dir does not exists: {}'.format(
+                            self.binlog_dir))
+            self.binlog_dir = None
+
+        # access to the queue
+        self.queue = linger_queue
+
+        # restore state by reading existing binlogs into the
+        #  shared messages dict.
+        if self.binlog_dir:
+            bnames = self.binlog_names()
+            if bnames:
+                # read existing binlogs
+                for binlog_no, name in bnames:
+                    try:
+                        self.read_binlog(binlog_no, name)
+                    except Exception as e:
+                        logging.error('Failed to read binlog {}: {}'.format(
+                            name, str(e)))
+                        traceback.print_exc()
+                        sys.exit(1)
+
+                self.current_binlog_no = binlog_no
+
+                # queue messages loaded from the binlogs
+                for msg_id, msg in sorted(self.queue.messages.items()):
+                    channel = self.queue.create_channel(msg['ch'])
+                    if msg['sh'] > 0.0:
+                        channel['hidden'].append(msg_id)
+                    else:
+                        channel['ready'].put(msg_id, msg['pr'])
+
+            self.binlog_counter = itertools.count(self.current_binlog_no + 1)
+            self.open()
+
+    def binlog_names(self):
+        if not self.binlog_dir:
+            return []
+        return list(sorted((int(n.split('.')[-1]), n)
+                    for n in os.listdir(self.binlog_dir)
+                    if re.match(r'{}\.\d+'.format(self.binlog_base_name), n)))
+
+    def read_binlog(self, binlog_no, name):
+        logging.debug('Read binlog {}'.format(name))
+        with open(os.path.join(self.binlog_dir, name), 'rb') as fd:
+            binlog = pickle.Unpickler(fd)
+
+            file_version, self.queue.server_id, self.queue.msg_max_no = (
+                binlog.load())
+            if file_version != 1:
+                raise Exception('Unknown binlog version {} in file {}'
+                                .format(file_version, name))
+            while True:
+                # read the events stored in the binlog
+                try:
+                    event = binlog.load()
+                    if event == self.Event['msg']:
+                        self.read_msg_event(binlog, binlog_no)
+                    elif event == self.Event['sub']:
+                        self.read_sub_event(binlog, binlog_no)
+                except EOFError:
+                    break
+
+    def read_sub_event(self, binlog, binlog_no):
+        action, chan_name, topic = binlog.load()
+        if action == self.Action['add']:
+            # subscribe channel to topic
+            subparams = binlog.load()
+            subparams['bn'] = binlog_no
+            subscribers = self.queue.subscriptions.setdefault(topic, {})
+            subscribers[chan_name] = subparams
+            logging.debug('Binlog read sub {} -> {}'.format(chan_name, topic))
+        elif action == self.Action['delete']:
+            # unsub channel from topic
+            if (topic in self.queue.subscriptions and
+                    chan_name in self.queue.subscriptions[topic]):
+                del self.queue.subscriptions[topic][chan_name]
+                if not self.queue.subscriptions[topic]:
+                    # no subscriptions left for this topic
+                    del self.queue.subscriptions[topic]
+            logging.debug('Binlog read unsub {} -> {}'.format(
+                          chan_name, topic))
+        else:
+            logging.error('Binlog read sub {} -> {} unknown action {}'
+                          .format(chan_name, topic, action))
+
+    def read_msg_event(self, binlog, binlog_no):
+        msg_id, action = binlog.load()
+        self.queue.msg_max_no = max(self.queue.msg_max_no, msg_id)
+        if action == self.Action['add']:
+            # add
+            logging.debug('Binlog read add msg {}'.format(msg_id))
+            msg = binlog.load()
+            msg['bn'] = binlog_no
+            self.queue.messages[msg_id] = msg
+        elif action == self.Action['delete']:
+            # delete
+            logging.debug('Binlog read delete msg {}'.format(msg_id))
+            if msg_id in self.queue.messages:
+                del self.queue.messages[msg_id]
+        elif action == self.Action['hide']:
+            # hide
+            logging.debug('Binlog read hide msg {}'.format(msg_id))
+            if msg_id in self.queue.messages:
+                msg = self.queue.messages[msg_id]
+                msg['dc'] += 1
+                msg['sh'] = binlog.load()
+        elif action == self.Action['show']:
+            # show
+            logging.debug('Binlog read show msg {}'.format(msg_id))
+            if msg_id in self.queue.messages:
+                msg = self.queue.messages[msg_id]
+                msg['sh'] = 0.0
+        else:
+            logging.error('Binlog read msg {} unknown action {}'.format(
+                msg_id, action))
+
+    def add_msg(self, msg):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['msg'])
+        self.binlog.dump((msg['id'], self.Action['add']))
+        self.binlog.dump(msg)
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        msg['bn'] = self.current_binlog_no
+        self.rotate()
+
+    def delete_msg(self, msg):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['msg'])
+        self.binlog.dump((msg['id'], self.Action['delete']))
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        self.rotate()
+
+    def hide_msg(self, msg):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['msg'])
+        self.binlog.dump((msg['id'], self.Action['hide']))
+        self.binlog.dump(msg['sh'])
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        self.rotate()
+
+    def show_msg(self, msg):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['msg'])
+        self.binlog.dump((msg['id'], self.Action['show']))
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        self.rotate()
+
+    def add_sub(self, chan_name, topic, subparams):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['sub'])
+        self.binlog.dump((self.Action['add'], chan_name, topic))
+        self.binlog.dump(subparams)
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        subparams['bn'] = self.current_binlog_no
+        self.rotate()
+
+    def delete_sub(self, chan_name, topic):
+        if not self.binlog:
+            return
+        self.binlog.dump(self.Event['sub'])
+        self.binlog.dump((self.Action['delete'], chan_name, topic))
+        self.queue.stats['binlog-write'] = (
+            self.queue.stats.get('binlog-write', 0) + 1)
+        self.rotate()
+
+    def open(self):
+        name = '{}.{}'.format(self.binlog_base_name, self.current_binlog_no)
+        path = os.path.join(self.binlog_dir, name)
+        exists = os.path.exists(path)
+        self.binlog_file = open(path, 'a+b', buffering=0)
+        self.binlog = pickle.Pickler(self.binlog_file, protocol=-1)
+        logging.debug('Binlog open file {}'.format(name))
+        if not exists:
+            # write fileheader with version info
+            self.binlog.dump((1, self.queue.server_id, self.queue.msg_max_no))
+            self.migrate()
+        else:
+            self.rotate()
+        self.purge()
+
+    def close(self):
+        if self.binlog_file:
+            self.binlog_file.close()
+            self.binlog = None
+            self.binlog_file = None
+
+    def migrate(self):
+        # migrate subscriptions to new binlog, to allow purging of old logs
+        logging.debug('Binlog subscription migration')
+        for topic, subscription in self.queue.subscriptions.items():
+            for chan_name, subparams in subscription.items():
+                self.add_sub(chan_name, topic, subparams)
+
+    def rotate(self):
+        if self.binlog_file.tell() > self.binlog_max_size:
+            logging.debug('Rotating binlog {}'.format(self.current_binlog_no))
+            self.binlog_file.close()
+            self.current_binlog_no = next(self.binlog_counter)
+            self.open()
+
+    def purge(self):
+        # binlogs used by messages
+        binlogs_used = set(msg['bn'] for msg in self.queue.messages.values())
+        # binlogs used by subscriptions
+        binlogs_used.update(
+            sp['bn'] for sub in self.queue.subscriptions.values()
+            for sp in sub.values())
+        # smallest binlog number in use
+        s = min(binlogs_used) if binlogs_used else self.current_binlog_no
+        for no, name in self.binlog_names():
+            if no == self.current_binlog_no or no >= s:
+                break
+            logging.debug('Binlog purge, removing file {}'.format(name))
+            os.remove(os.path.join(self.binlog_dir, name))
+
+
+class LingerQueue:
+
+    # time-to-live for channels, after they are last used
+    channel_ttl = 3 * 60.0  # 3 minutes
+
+    msg_max_size = 256 * 1000  # 256 KB in bytes
+
+    def __init__(self):
+        self.stats = {'start': int(time.time())}
+
+        self.messages = {}       # (id, msg) mapping
+        self.channels = {}       # (name, channel) mapping
+        self.subscriptions = {}  # (topic, list) mapping
+
+        # a random server_id, may be overwritten when loading binlogs
+        self.server_id = uuid.uuid4().hex
+
+        self.msg_max_no = 0
+
+        self.binlog = Binlog(self)
+
+        self.msg_counter = itertools.count(self.msg_max_no + 1)
+
+        self.periodic_callback = tornado.ioloop.PeriodicCallback(
+            self.heartbeat, 1000)
+        self.periodic_callback.start()
+
+    def stop(self):
+        self.periodic_callback.stop()
+        for ch in self.channels.values():
+            ch['listeners'].stop()
+        self.binlog.close()
+
+    def heartbeat(self):
+        """Heartbeat function, called periodically from the IOLoop."""
+
+        now = time.time()
+
+        # purge messages that have exceed their rentention time
+        purge = [msg for msg_id, msg in self.messages.items()
+                 if msg['pu'] > 0 and msg['pu'] < now]
+        for msg in purge:
+            logging.debug('Exceeded retention on msg {}'.format(msg['id']))
+            self.stats['msg-retention'] = (
+                self.stats.get('msg-retention', 0) + 1)
+            self.delete_message(msg)
+
+        # show the delivered messages that exceeds the visibility timeout
+        expired = [(channel, self.messages[msg_id])
+                   for channel in self.channels.values()
+                   for msg_id in channel['hidden']
+                   if self.messages[msg_id]['sh'] < now]
+        for channel, msg in expired:
+            logging.debug('Exceeded timeout on msg {}'.format(msg['id']))
+            self.stats['msg-timeouts'] = self.stats.get('msg-timeouts', 0) + 1
+            if msg['dm'] == 0 or msg['dc'] < msg['dm']:
+                # show the message
+                msg['sh'] = 0.0
+                self.binlog.show_msg(msg)
+                channel['hidden'].remove(msg['id'])
+
+                if channel['listeners'].deliver(msg):
+                    # message is delivered right away
+                    self.stats['delivered'] = (
+                        self.stats.get('delivered', 0) + 1)
+                    self.hide_message(msg, channel)
+                else:
+                    # move it to the ready queue
+                    self.stats['msg-show'] = self.stats.get('msg-show', 0) + 1
+                    channel['ready'].put(msg['id'], msg['pr'])
+            else:
+                # message delivered to many times, delete it
+                self.delete_message(msg)
+
+        # check if channel is in use, otherwise remove it
+        unused = [(n, c) for n, c in self.channels.items()
+                  if not (c['ready'] or c['hidden'] or c['listeners']) and (
+                     c['ts'] + self.channel_ttl < now)]
+        for name, channel in unused:
+            # channel is no longer in use
+            logging.debug('Removing empty channel {}'.format(name))
+            channel['listeners'].stop()
+            del self.channels[name]
+            self.stats['channel-remove'] = (
+                self.stats.get('channel-remove', 0) + 1)
+
+    def current_stats(self):
+        s = self.stats.copy()
+        times = os.times()
+        bnames = self.binlog.binlog_names()
+        total = len(self.messages)
+        urgent = sum(1 for m in self.messages.values() if m['pr'] < 0)
+        normal = sum(1 for m in self.messages.values() if m['pr'] == 0)
+        hidden = sum(1 for m in self.messages.values() if m['ts'] > 0.0)
+        s.update({
+            'current-topics': len(self.subscriptions),
+            'current-subscriptions': sum(
+                len(s) for s in self.subscriptions.values()),
+            'current-channels': len(self.channels),
+            'current-messages': total,
+            'current-messages-ready': total - hidden,
+            'current-messages-hidden': hidden,
+            'current-messages-urgent': urgent,
+            'current-messages-niced': total - normal - urgent,
+            'current-uptime': int(time.time() - self.stats['start']),
+            'binlog-files-count': len(bnames),
+            'binlog-oldest-index': bnames[0][0] if bnames else 0,
+            'binlog-current-index': self.binlog.current_binlog_no,
+            'pid': os.getpid(),
+            'rusage-utime': times[0],
+            'rusage-stime': times[1],
+            'version': __version__,
+            'msg-max-id': self.msg_max_no,
+            'msg-max-size': self.msg_max_size,
+            'id': self.server_id,
+            'hostname': platform.uname()[1]
+        })
+        return s
+
+    #
+    #  channel and message functions
+
+    def create_channel(self, name):
+        channel = self.channels.get(name)
+        if channel is None:
+            logging.debug('Creating channel {}'.format(name))
+            channel = {'ready': PQueue(), 'hidden': [],
+                       'listeners': Listeners()}
+            self.channels[name] = channel
+            self.stats['channel-create'] = (
+                self.stats.get('channel-create', 0) + 1)
+        # mark last used
+        channel['ts'] = time.time()
+        return channel
+
+    def add_message(self, chan_name, body, mime_type, priority, timeout,
+                    deliver, linger, topic=''):
+        msg_size = len(body)
+        if msg_size == 0:
+            raise ValueError('Message is empty.')
+        if msg_size > self.msg_max_size:
+            raise ValueError('The message size {} bytes exceeed the maximum '
+                             'allowed {} bytes.'.format(
+                                msg_size, self.msg_max_size))
+        channel = self.create_channel(chan_name)
+        now = time.time()
+        purge = now + linger if linger > 0 else 0
+        msg_id = next(self.msg_counter)
+        self.msg_max_no = msg_id
+        msg = {
+            'id': msg_id,       # set message id
+            'bd': body,         # message body
+            'mi': mime_type,    # mime-type
+            'to': topic,        # message topic
+            'vt': timeout,      # visibility timeout (seconds)
+            'pr': priority,     # message priority
+            'ch': chan_name,    # channel name
+            'ts': now,          # timestamp (when added to the queue)
+            'li': linger,       # message retention (seconds)
+            'pu': purge,        # when to purge the message (timestamp)
+            'dm': deliver,      # max devliver count
+            'dc': 0,            # delivered count
+            'sh': 0.0           # timestamp when message should be shown
+                                # (non-zero if hidden)
+        }
+        self.messages[msg_id] = msg
+
+        # add to the binlog (also adds the key 'bn', i.e., binlog no)
+        self.binlog.add_msg(msg)
+
+        logging.debug('Adding message {}'.format(msg_id))
+        self.stats['msg-add'] = self.stats.get('msg-add', 0) + 1
+
+        if channel['listeners'].deliver(msg):
+            # message is delivered right away
+            self.stats['delivered'] = self.stats.get('delivered', 0) + 1
+            self.hide_message(msg, channel)
+        else:
+            # queue message for later delivery
+            channel['ready'].put(msg_id, priority)
+
+        return msg_id
+
+    def hide_message(self, msg, channel):
+        channel['hidden'].append(msg['id'])
+        msg['sh'] = time.time() + msg['vt']
+        msg['dc'] += 1
+        self.stats['msg-hide'] = self.stats.get('msg-hide', 0) + 1
+        self.binlog.hide_msg(msg)
+
+    def get_message(self, chan_name, pick=False):
+        future = tornado.concurrent.Future()
+
+        if pick and chan_name not in self.channels:
+            # no such channel, reply right away
+            future.set_result(None)
+            return future
+
+        channel = self.create_channel(chan_name)
+
+        if channel['ready']:
+            # a message is ready for delivery
+            msg_id = channel['ready'].pop()
+            msg = self.messages[msg_id]
+            self.hide_message(msg, channel)
+            logging.debug('Delivering message {}'.format(msg_id))
+            future.set_result(msg)
+        elif pick:
+            # not ready, reply right away
+            future.set_result(None)
+        else:
+            # not ready, hold on to the reply
+            channel['listeners'].add_future(future)
+
+        self.stats['msg-get'] = self.stats.get('msg-get', 0) + 1
+
+        return future
+
+    def delete_message(self, msg):
+        msg_id = msg['id']
+        logging.debug('Deleting message {}'.format(msg_id))
+        del self.messages[msg_id]
+        channel = self.create_channel(msg['ch'])
+        if msg['sh'] > 0.0:
+            channel['hidden'].remove(msg_id)
+        else:
+            channel['ready'].remove(msg_id)
+        self.stats['msg-delete'] = self.stats.get('msg-delete', 0) + 1
+        self.binlog.delete_msg(msg)
+
+    def delete_message_from_id(self, msg_id):
+        msg = self.messages.get(msg_id)
+        if msg is None:
+            logging.debug('Attempt at deleting non-existent message {}'
+                          .format(msg_id))
+            return False
+        self.delete_message(msg)
+        return True
+
+    def add_subscription(self, chan_name, topic, priority, timeout, deliver,
+                         linger):
+        subparams = {
+            'vt': timeout,      # visibility timeout (seconds)
+            'pr': priority,     # message priority
+            'li': linger,       # message retention (seconds)
+            'dm': deliver,      # max devliver count
+            'ts': time.time()   # timestamp (when created)
+        }
+        subscribers = self.subscriptions.setdefault(topic, {})
+        subscribers[chan_name] = subparams
+        self.stats['sub-add'] = self.stats.get('sub-add', 0) + 1
+        self.binlog.add_sub(chan_name, topic, subparams)
+        logging.debug('Subscribing {} -> {}'.format(chan_name, topic))
+
+    def delete_subscription(self, chan_name, topic):
+        if (topic not in self.subscriptions or
+                chan_name not in self.subscriptions[topic]):
+            logging.debug(
+                'Attempt at deleting non-existent subscription {} -> {}'
+                .format(chan_name, topic))
+            return False
+
+        del self.subscriptions[topic][chan_name]
+
+        if not self.subscriptions[topic]:
+            # topic has no subscriptions left
+            del self.subscriptions[topic]
+
+        self.stats['sub-delete'] = self.stats.get('sub-delete', 0) + 1
+
+        # add to the binlog (also adds the key 'bn', i.e., binlog no)
+        self.binlog.delete_sub(chan_name, topic)
+
+        logging.debug('Unsubscribing {} -> {}'.format(chan_name, topic))
+        return True
+
+    def publish_message(self, topic, body, mime_type):
+        published = {}
+        if topic not in self.subscriptions:
+            logging.debug('Publishing on {}, no subscribers'.format(topic))
+            return published
+        logging.debug('Publishing on {}, {} subscribers'.format(
+            topic, len(self.subscriptions[topic])))
+        trans = {'vt': 'timeout', 'pr': 'priority', 'li': 'linger',
+                 'dm': 'deliver'}
+        for chan_name, subparams in self.subscriptions[topic].items():
+            params = {p: subparams[k] for k, p in trans.items()}
+            msg_id = self.add_message(chan_name, body, mime_type, topic=topic,
+                                      **params)
+            published[chan_name] = msg_id
+            self.stats['publish'] = self.stats.get('publish', 0) + 1
+        return published
+
+
+class RequestHandler(tornado.web.RequestHandler):
+
+    @property
+    def queue(self):
+        return self.settings['queue']
+
+    def check_xsrf_cookie(self):
+        pass
+
+    def set_default_headers(self):
+        self.set_header('Server', 'Linger {}'.format(
+            self.queue.server_id))
+        self.set_header('Etag', '"{}"'.format(uuid.uuid4().hex))
+        self.set_header('Content-Type', 'text/plain')
+
+    def write_error(self, status_code, **kwargs):
+        if self.settings.get("serve_traceback") and "exc_info" in kwargs:
+            super().write_error(status_code, **kwargs)
+        else:
+            self.finish('HTTP {} {}\n'.format(status_code, self._reason))
+
+
+class StatsHandler(RequestHandler):
+
+    def get(self):
+        self.finish(self.queue.current_stats())
+
+
+class ChannelListHandler(RequestHandler):
+
+    def get(self):
+        self.finish(dict(channels=list(self.queue.channels.keys())))
+
+
+class ReqParamMixin:
+
+    def req_params(self):
+        try:
+            priority = int(self.get_argument('priority', 0))
+        except ValueError:
+            self.send_error(400, reason='Invalid message priority.')
+            return
+
+        try:
+            timeout = int(self.get_argument('timeout', 30))
+            if timeout < 1:
+                raise ValueError()
+        except ValueError:
+            self.send_error(400, reason='Invalid message visibility timeout.')
+            return
+
+        try:
+            deliver = int(self.get_argument('deliver', 10))
+            if deliver < 0:
+                raise ValueError()
+        except ValueError:
+            self.send_error(400, reason='Invalid message delivery limit.')
+            return
+
+        try:
+            linger = int(self.get_argument('linger', 0))
+            if linger < 0:
+                raise ValueError()
+        except ValueError:
+            self.send_error(400, reason='Invalid message delivery limit.')
+            return
+
+        return dict(priority=priority, timeout=timeout, deliver=deliver,
+                    linger=linger)
+
+
+class ChannelHandler(RequestHandler, ReqParamMixin):
+
+    @coroutine
+    def get(self, chan_name):
+        pick = self.get_argument('pick', None) is not None
+
+        msg = yield self.queue.get_message(chan_name, pick)
+
+        self.set_header('X-LINGER-CHANNEL', chan_name)
+
+        if msg is None:
+            self.set_status(204)
+            self.finish()
+            return
+
+        # set response headers
+        self.set_header('Content-Type', msg['mi'])
+        self.set_header('X-LINGER-MSG-ID', msg['id'])
+        self.set_header('X-LINGER-PRIORITY', msg['pr'])
+        self.set_header('X-LINGER-TIMEOUT', msg['vt'])
+        self.set_header('X-LINGER-DELIVER', msg['dm'])
+        self.set_header('X-LINGER-DELIVERED', msg['dc'])
+        self.set_header('X-LINGER-RECEIVED', int(msg['ts']))
+        self.set_header('X-LINGER-LINGER', int(msg['li']))
+        self.set_header('X-LINGER-TOPIC', msg['to'])
+
+        # deliver the message
+        self.finish(msg['bd'])
+
+    def post(self, chan_name):
+        body = self.get_argument('msg', None)
+        if body is None:
+            body = self.request.body
+            mime_type = self.request.headers.get('Content-Type', 'text/plain')
+        else:
+            mime_type = 'text/plain'
+
+        params = self.req_params()
+        if not params:
+            return
+
+        try:
+            msg_id = self.queue.add_message(
+                chan_name, body, mime_type, **params)
+        except ValueError as e:
+            self.send_error(400, reason=e.args[0])
+            return
+
+        self.set_status(202)
+        self.finish({'id': msg_id})
+
+
+class ChannelTopicListHandler(RequestHandler):
+
+    def get(self, chan_name):
+        topics = list(sorted(
+            topic
+            for topic, subscribers in self.queue.subscriptions.items()
+            if chan_name in subscribers))
+        self.finish({'topics': topics})
+
+
+class ChannelTopicSubHandler(RequestHandler, ReqParamMixin):
+
+    def put(self, chan_name, topic_name):
+        params = self.req_params()
+        if not params:
+            return
+
+        self.queue.add_subscription(chan_name, topic_name, **params)
+        self.set_status(204)
+
+    def delete(self, chan_name, topic_name):
+        if self.queue.delete_subscription(chan_name, topic_name):
+            self.set_status(204)
+        else:
+            self.set_status(404, reason='Message not found.')
+
+
+class TopicListHandler(RequestHandler):
+
+    def get(self):
+        self.finish({'topics': list(sorted(self.queue.subscriptions.keys()))})
+
+
+class TopicHandler(RequestHandler):
+
+    def post(self, topic):
+        body = self.get_argument('msg', None)
+        if body is None:
+            body = self.request.body
+            mime_type = self.request.headers.get('Content-Type', 'text/plain')
+        else:
+            mime_type = 'text/plain'
+
+        try:
+            published = self.queue.publish_message(topic, body, mime_type)
+        except ValueError as e:
+            self.send_error(400, reason=e.args[0])
+            return
+
+        self.set_status(202)
+        self.finish(published)
+
+
+class TopicChannelListHandler(RequestHandler):
+
+    def get(self, topic):
+        subscribers = self.queue.subscriptions.get(topic)
+        channels = list(sorted(subscribers.keys())) if subscribers else []
+        self.finish({'channels': channels})
+
+
+class MessageHandler(RequestHandler):
+
+    def delete(self, msg_id):
+        try:
+            msg_id = int(msg_id)
+        except ValueError:
+            self.send_error(400, reason='Invalid message number.')
+
+        if self.queue.delete_message_from_id(msg_id):
+            self.set_status(204)
+        else:
+            self.set_status(404, reason='Message not found.')
+
+
+def handle_signals(http_server, shutdown_callback=None):
+    """Make the http server shutdown on SIGINT and SIGTERM"""
+
+    def signal_handler(*args):
+        # handle SIGTERM (kill) and SIGINT (Ctrl-C) signals
+
+        if state.get('shutdown'):
+            # shutdown is in progress
+            return
+        state['shutdown'] = True
+
+        def shutdown():
+            if shutdown_callback:
+                shutdown_callback()
+            tornado.ioloop.IOLoop.current().stop()
+            logging.info('Shutdown completed')
+            sys.exit(0)
+
+        logging.info('Initiating shutdown')
+
+        # stop accepting requests
+        http_server.stop()
+
+        # wait (default 1 sec) for requests to finish, then die
+        tornado.ioloop.IOLoop.current().add_timeout(
+            time.time() + options.shutdown_timeout, shutdown)
+
+    state = {}
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+
+
+def main():
+
+    parse_command_line()
+
+    linger_queue = LingerQueue()
+
+    settings = {
+        'debug': options.debug,
+        'queue': linger_queue,
+        'shutdown_callback': linger_queue.stop,
+    }
+
+    handlers = {
+        (r'/stats', StatsHandler),
+        (r'/channels/([\w%-]+)/topics/([\w%-]+)', ChannelTopicSubHandler),
+        (r'/channels/([\w%-]+)/topics', ChannelTopicListHandler),
+        (r'/channels/([\w%-]+)', ChannelHandler),
+        (r'/channels', ChannelListHandler),
+        (r'/topics/([\w%-]+)/channels', TopicChannelListHandler),
+        (r'/topics/([\w%-]+)', TopicHandler),
+        (r'/topics', TopicListHandler),
+        (r'/messages/(\d+)', MessageHandler)
+
+    }
+
+    application = tornado.web.Application(handlers, **settings)
+    http_server = tornado.httpserver.HTTPServer(
+        application, xheaders=not options.debug)
+    http_server.listen(options.port)
+    logging.info('Starting server at port %d' % options.port)
+    if options.debug:
+        logging.debug('Running in debug mode')
+
+    # make the server stop on SIGINT and SIGTERM
+    handle_signals(http_server, settings.get('shutdown_callback'))
+
+    tornado.ioloop.IOLoop.current().start()
+
+
+if __name__ == '__main__':
+    main()

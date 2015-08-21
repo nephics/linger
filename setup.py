@@ -7,7 +7,7 @@ setup(name='linger',
       author_email='jacob@nephics.com',
       license="http://www.apache.org/licenses/LICENSE-2.0",
       url='https://bitbucket.org/nephics/linger',
-      scripts=['linger-queue', 'linger-pubsub'],
+      scripts=['linger'],
       requires=['tornado(>=4.2.1)'],
       classifiers=[
         'Development Status :: 4 - Beta',

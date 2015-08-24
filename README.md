@@ -201,9 +201,9 @@ The response headers with prefix `x-linger-` provide the message ID, the channel
 
 The response content-type will be the same as specified when adding the message to the channel (default is text/plain).
 
-By adding the `pick` query parameter, you may prevent long-polling, and have the server send a response immediately. This implies that the server will return an empty reply, if there is no message waiting in the channel. Example request:
+By adding the `nowait` query parameter, you may prevent long-polling, and have the server send a response immediately. This implies that the server will return an empty reply, if there is no message waiting in the channel. Example request:
 
-    curl http://127.0.0.1:8989/channels/test?pick
+    curl http://127.0.0.1:8989/channels/test?nowait
 
 ## List topics a channel is subscribed to
 

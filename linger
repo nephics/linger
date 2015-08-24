@@ -587,10 +587,10 @@ class LingerQueue:
         self.stats['msg-hide'] = self.stats.get('msg-hide', 0) + 1
         self.binlog.hide_msg(msg)
 
-    def get_message(self, chan_name, pick=False):
+    def get_message(self, chan_name, nowait=False):
         future = tornado.concurrent.Future()
 
-        if pick and chan_name not in self.channels:
+        if nowait and chan_name not in self.channels:
             # no such channel, reply right away
             future.set_result(None)
             return future
@@ -604,7 +604,7 @@ class LingerQueue:
             self.hide_message(msg, channel)
             logging.debug('Delivering message {}'.format(msg_id))
             future.set_result(msg)
-        elif pick:
+        elif nowait:
             # not ready, reply right away
             future.set_result(None)
         else:
@@ -766,9 +766,9 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
 
     @coroutine
     def get(self, chan_name):
-        pick = self.get_argument('pick', None) is not None
+        nowait = self.get_argument('nowait', None) is not None
 
-        msg = yield self.queue.get_message(chan_name, pick)
+        msg = yield self.queue.get_message(chan_name, nowait)
 
         self.set_header('x-linger-channel', chan_name)
 

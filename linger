@@ -770,7 +770,7 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
 
         msg = yield self.queue.get_message(chan_name, pick)
 
-        self.set_header('X-LINGER-CHANNEL', chan_name)
+        self.set_header('x-linger-channel', chan_name)
 
         if msg is None:
             self.set_status(204)
@@ -779,14 +779,14 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
 
         # set response headers
         self.set_header('Content-Type', msg['mi'])
-        self.set_header('X-LINGER-MSG-ID', msg['id'])
-        self.set_header('X-LINGER-PRIORITY', msg['pr'])
-        self.set_header('X-LINGER-TIMEOUT', msg['vt'])
-        self.set_header('X-LINGER-DELIVER', msg['dm'])
-        self.set_header('X-LINGER-DELIVERED', msg['dc'])
-        self.set_header('X-LINGER-RECEIVED', int(msg['ts']))
-        self.set_header('X-LINGER-LINGER', int(msg['li']))
-        self.set_header('X-LINGER-TOPIC', msg['to'])
+        self.set_header('x-linger-msg-id', msg['id'])
+        self.set_header('x-linger-priority', msg['pr'])
+        self.set_header('x-linger-timeout', msg['vt'])
+        self.set_header('x-linger-deliver', msg['dm'])
+        self.set_header('x-linger-delivered', msg['dc'])
+        self.set_header('x-linger-received', int(msg['ts']))
+        self.set_header('x-linger-linger', int(msg['li']))
+        self.set_header('x-linger-topic', msg['to'])
 
         # deliver the message
         self.finish(msg['bd'])

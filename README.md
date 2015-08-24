@@ -122,6 +122,9 @@ The list of current channels can be retrieved using a HTTP GET request to `/chan
     curl -X GET http://127.0.0.1:8989/channels
 
 The server responds with HTTP status code 200, and the channel list is included in the response body, which is text encoded as JSON.
+Example response:
+
+    {"channels": ['test']}
 
 ## Add message to a channel
 
@@ -184,17 +187,17 @@ The server will either reply with HTTP status code 200, and the  message in the 
 
 The server will automatically end a long-polling request after a couple of minutes. If there is no message available, the server replies with HTTP status code 204, and an empty response body.
 
-The response headers with prefix `X-LINGER-` provide the message ID, the channel name, the priority, the visibility timeout, max delivery attempts, the count of delivery attempts (including this one) and the POSIX timestamp (in seconds) for when the message was received by the channel. Example:
+The response headers with prefix `x-linger-` provide the message ID, the channel name, the priority, the visibility timeout, max delivery attempts, the count of delivery attempts (including this one) and the POSIX timestamp (in seconds) for when the message was received by the channel. Example:
 
-    X-LINGER-MSG-ID: 1
-    X-LINGER-CHANNEL: test
-    X-LINGER-PRIORITY: 10
-    X-LINGER-TIMEOUT: 60
-    X-LINGER-DELIVER: 5
-    X-LINGER-DELIVERED: 1
-    X-LINGER-RECEIVED: 1439842170
-	  X-LINGER-LINGER: 0
-    X-LINGER-TOPIC: some-topic
+    x-linger-msg-id: 1
+    x-linger-channel: test
+    x-linger-priority: 10
+    x-linger-timeout: 60
+    x-linger-deliver: 5
+    x-linger-delivered: 1
+    x-linger-received: 1439842170
+    x-linger-linger: 0
+    x-linger-topic: some-topic
 
 The response content-type will be the same as specified when adding the message to the channel (default is text/plain).
 

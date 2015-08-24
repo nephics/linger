@@ -10,6 +10,8 @@ The message queue distributes messages in channels from publishers to consumers.
 
 The pubsub (publish-subscribe) functionality distribute messages from publishers to subscribers (both fan-in and fan-out). It can be used in situations where message notification is needed, e.g., for delivering status updates, or change notifications.
 
+Linger can act as an HTTP/HTTPS endpoint for [Amazon SNS notifications](http://docs.aws.amazon.com/sns/latest/dg/SendMessageToHttp.html). SNS subscriptions are automatically confirmed, and the subscription notification is discarded. Incoming SNS notifications are otherwise treated as normal messages.
+
 The Linger server is implemented in Python 3 using a non-blocking, single-threaded [Tornado web server](http://www.tornadoweb.org/).
 
 The code and documentation is licensed under the Apache License v2.0, see more in the LICENSE file.
@@ -80,6 +82,8 @@ The server support the use of binlogs for maintaining messaging history and the 
 ## Security
 
 The HTTP API is unauthenticated, all clients have unrestricted access to the full API, but you may use a reverse proxy like [nginx](http://nginx.org) to require authentication for network access, see [HTTP Basic Auth](http://nginx.org/en/docs/http/ngx_http_auth_basic_module.html).
+
+Linger will make outbound requests to confirm AWS SNS subscriptions. Basic URL validation is performed on the subscription URL, but the message signature is not verified. It is possible to forge a subscription message, and receive a subscription callback from Linger.
 
 ## Limits and performance
 

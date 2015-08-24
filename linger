@@ -17,9 +17,12 @@ import signal
 import sys
 import time
 import traceback
+import urllib.parse
 import uuid
 
 import tornado.concurrent
+import tornado.escape
+import tornado.httpclient
 import tornado.httpserver
 import tornado.ioloop
 import tornado.web
@@ -42,6 +45,50 @@ define('shutdown_timeout', default=1, type=float, help='grace time in seconds'
        group='application')
 define('binlog_dir', default=None, type=str, help='binlog directory',
        group='application')
+
+
+@coroutine
+def sns_confirm(body):
+    """Perform the SNS subscription confirmation request.
+
+    Basic URL validation is performed on the subscription URL, but the message
+    signature is not verified. It is possible to forge a subscription message,
+    and receive a subscription callback from Linger.
+    """
+    try:
+        data = tornado.escape.json_decode(body)
+    except Exception as e:
+        logging.warning('Invalid JSON in SNS subscription request: {}'.format(
+            e))
+        return
+
+    k = 'SubscribeURL'
+    if not data.get(k):
+        logging.warning('Missing subscription URL in SNS message.')
+        return
+
+    url = data[k]
+    try:
+        h = urllib.parse.urlparse(url).hostname
+    except Exception as e:
+        logging.warning('Invalid URL in SNS message: {} - Parse Error: {}'
+                        .format(url, e))
+        return
+
+    # basic (and incomplete) url validation
+    if not h or not h.startswith('sns.') or not h.endswith('.amazonaws.com'):
+        logging.warning('SNS subscription URL is not valid: {}'.format(
+            url))
+        return
+
+    http = tornado.httpclient.AsyncHTTPClient()
+    try:
+        yield http.fetch(url)
+    except Exception as e:
+        logging.error('Could not confirm SNS subscription')
+    else:
+        logging.info('SNS subscription confirmed. Topic: {}'.format(
+            data.get('TopicArn')))
 
 
 class PQueue:
@@ -762,7 +809,21 @@ class ReqParamMixin:
                     linger=linger)
 
 
-class ChannelHandler(RequestHandler, ReqParamMixin):
+class SNSMixin:
+
+    def sns_subscription(self):
+        h = self.request.headers.get('x-amz-sns-message-type')
+        if h == 'SubscriptionConfirmation':
+            tornado.ioloop.IOLoop.current().add_future(
+                sns_confirm(self.request.body), lambda f: f.result())
+            return True
+        if h:
+            # fix the content type
+            self.request.headers['Content-Type'] = 'application/json'
+        return False
+
+
+class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
 
     @coroutine
     def get(self, chan_name):
@@ -792,6 +853,12 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
         self.finish(msg['bd'])
 
     def post(self, chan_name):
+        if self.sns_subscription():
+            # subscription confirmation message from SNS
+            self.set_status(202)
+            self.finish()
+            return
+
         body = self.get_argument('msg', None)
         if body is None:
             body = self.request.body
@@ -847,9 +914,15 @@ class TopicListHandler(RequestHandler):
         self.finish({'topics': list(sorted(self.queue.subscriptions.keys()))})
 
 
-class TopicHandler(RequestHandler):
+class TopicHandler(RequestHandler, SNSMixin):
 
     def post(self, topic):
+        if self.sns_subscription():
+            # subscription confirmation message from SNS
+            self.set_status(202)
+            self.finish()
+            return
+
         body = self.get_argument('msg', None)
         if body is None:
             body = self.request.body

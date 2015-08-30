@@ -76,7 +76,9 @@ def sns_confirm(body):
         return
 
     # basic (and incomplete) url validation
-    if not h or not h.startswith('sns.') or not h.endswith('.amazonaws.com'):
+    if not h or (
+            not (h.startswith('sns.') and h.endswith('.amazonaws.com')) and
+            not (options.debug and h == '127.0.0.1')):
         logging.warning('SNS subscription URL is not valid: {}'.format(
             url))
         return
@@ -814,8 +816,15 @@ class SNSMixin:
     def sns_subscription(self):
         h = self.request.headers.get('x-amz-sns-message-type')
         if h == 'SubscriptionConfirmation':
-            tornado.ioloop.IOLoop.current().add_future(
-                sns_confirm(self.request.body), lambda f: f.result())
+            io_loop = tornado.ioloop.IOLoop.current()
+
+            def confirm():
+                io_loop.add_future(
+                    sns_confirm(self.request.body),
+                    lambda f: f.result())
+
+            # wait a second before confirming
+            io_loop.call_later(1, confirm)
             return True
         if h:
             # fix the content type

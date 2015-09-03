@@ -1036,6 +1036,14 @@ class MessageHandler(RequestHandler):
             self.set_status(404, reason='Message not found.')
 
 
+class HomeHandler(RequestHandler):
+
+    def get(self):
+        self.finish({'Linger': 'Welcome', 'version': __version__,
+                     'id': self.queue.server_id,
+                     'hostname': platform.uname()[1]})
+
+
 def handle_signals(http_server, shutdown_callback=None):
     """Make the http server shutdown on SIGINT and SIGTERM"""
 
@@ -1081,6 +1089,7 @@ def main():
     }
 
     handlers = {
+        (r'/', HomeHandler),
         (r'/stats', StatsHandler),
         (r'/channels/([\w%-]+)/topics/([\w%-]+)', ChannelTopicSubHandler),
         (r'/channels/([\w%-]+)/topics', ChannelTopicListHandler),

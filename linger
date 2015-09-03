@@ -151,14 +151,14 @@ class Listeners:
     """A class for notifying channel listeners."""
 
     # time in sec to keep a future
-    time_out = 120.0  # 2 min in seconds
+    time_out = 90.0  # 1.5 min in seconds
 
     def __init__(self):
         self.futures = []
 
         # the interval in ms between pruning callbacks (in ms)
         self.periodic_callback = tornado.ioloop.PeriodicCallback(
-                self.heartbeat, 2000.0)
+                self.heartbeat, 10000.0)
         self.periodic_callback.start()
 
     def now_ms(self):
@@ -177,7 +177,9 @@ class Listeners:
         now = time.time()
         keep = []
         for future, ts in self.futures:
-            if ts < now:
+            if future.done():
+                continue
+            elif ts < now:
                 future.set_result(None)
             else:
                 keep.append((future, ts))
@@ -189,13 +191,14 @@ class Listeners:
 
     def deliver(self, msg):
         """Deliver message to first listener"""
-        if not self.futures:
-            return False
-        future, _ = self.futures.pop(0)
-        tornado.ioloop.IOLoop.current().add_callback(
-            lambda f: f.set_result(msg), future)
-        logging.debug('Delivering message {}'.format(msg['id']))
-        return True
+        while self.futures:
+            future, _ = self.futures.pop(0)
+            if future.done():
+                continue
+            future.set_result(msg)
+            logging.debug('Delivering message {}'.format(msg['id']))
+            return True
+        return False
 
     def __nonzero__(self):
         return bool(self.futures)
@@ -846,11 +849,15 @@ class SNSMixin:
 
 class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
 
+    def prepare(self):
+        self.future = None
+
     @coroutine
     def get(self, chan_name):
         nowait = self.get_argument('nowait', None) is not None
 
-        msg = yield self.queue.get_message(chan_name, nowait)
+        self.future = self.queue.get_message(chan_name, nowait)
+        msg = yield self.future
 
         self.set_header('x-linger-channel', chan_name)
 
@@ -872,6 +879,11 @@ class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
 
         # deliver the message
         self.finish(msg['bd'])
+
+    def on_connection_close(self):
+        if self.future and not self.future.done():
+            logging.info('Connection closed prematurely')
+            self.future.set_result(None)
 
     def post(self, chan_name):
         if self.sns_subscription():

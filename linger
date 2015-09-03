@@ -210,7 +210,7 @@ class Listeners:
 class Binlog:
 
     binlog_base_name = 'linger-binlog'
-    binlog_max_size = 1000000  # 1 MB in bytes
+    binlog_max_size = 2 * 10**6  # 2 MB in bytes
 
     Event = {'msg': 1, 'sub': 2}
     Action = {'add': 1, 'delete': 2, 'hide': 3, 'show': 4}
@@ -404,7 +404,7 @@ class Binlog:
         path = os.path.join(self.binlog_dir, name)
         exists = os.path.exists(path)
         self.binlog_file = open(path, 'a+b', buffering=0)
-        self.binlog = pickle.Pickler(self.binlog_file, protocol=-1)
+        self.binlog = pickle.Pickler(self.binlog_file)
         logging.debug('Binlog open file {}'.format(name))
         if not exists:
             # write fileheader with version info

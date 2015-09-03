@@ -882,7 +882,7 @@ class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
 
     def on_connection_close(self):
         if self.future and not self.future.done():
-            logging.info('Connection closed prematurely')
+            logging.debug('Connection closed prematurely')
             self.future.set_result(None)
 
     def post(self, chan_name):

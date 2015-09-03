@@ -151,7 +151,7 @@ class Listeners:
     """A class for notifying channel listeners."""
 
     # time in sec to keep a future
-    time_out = 90.0  # 1.5 min in seconds
+    time_out = 120.0  # 2 min in seconds
 
     def __init__(self):
         self.futures = []

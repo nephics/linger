@@ -740,6 +740,17 @@ class LingerQueue:
             self.stats['publish'] = self.stats.get('publish', 0) + 1
         return published
 
+    def list_channel_messages(self, chan_name):
+        l = dict(messages=[], hidden=[])
+        if chan_name in self.channels:
+            channel = self.channels[chan_name]
+            l['messages'].extend(i for i in channel['ready'].entry_finder)
+            l['hidden'].extend(channel['hidden'])
+            l['messages'].extend(channel['hidden'])
+            l['hidden'].sort()
+            l['messages'].sort()
+        return l
+
 
 class RequestHandler(tornado.web.RequestHandler):
 
@@ -891,6 +902,12 @@ class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
         self.finish({'id': msg_id})
 
 
+class ChannelMessagesHandler(RequestHandler):
+
+    def get(self, chan_name):
+        self.finish(self.queue.list_channel_messages(chan_name))
+
+
 class ChannelTopicListHandler(RequestHandler):
 
     def get(self, chan_name):
@@ -960,9 +977,44 @@ class TopicChannelListHandler(RequestHandler):
 
 class MessageHandler(RequestHandler):
 
+    def head(self, msg_id):
+        self.get(msg_id)
+
+    def get(self, msg_id):
+        try:
+            msg_id = int(msg_id)
+            if msg_id < 0:
+                raise ValueError()
+        except ValueError:
+            self.send_error(400, reason='Invalid message number.')
+
+        msg = self.queue.messages.get(msg_id)
+
+        if msg is None:
+            self.set_status(404)
+            self.finish()
+            return
+
+        # set response headers
+        self.set_header('Content-Type', msg['mi'])
+        self.set_header('x-linger-msg-id', msg['id'])
+        self.set_header('x-linger-priority', msg['pr'])
+        self.set_header('x-linger-timeout', msg['vt'])
+        self.set_header('x-linger-deliver', msg['dm'])
+        self.set_header('x-linger-delivered', msg['dc'])
+        self.set_header('x-linger-received', int(msg['ts']))
+        self.set_header('x-linger-linger', int(msg['li']))
+        self.set_header('x-linger-channel', msg['ch'])
+        self.set_header('x-linger-topic', msg['to'])
+
+        # deliver the message
+        self.finish(msg['bd'])
+
     def delete(self, msg_id):
         try:
             msg_id = int(msg_id)
+            if msg_id < 0:
+                raise ValueError()
         except ValueError:
             self.send_error(400, reason='Invalid message number.')
 
@@ -1020,6 +1072,7 @@ def main():
         (r'/stats', StatsHandler),
         (r'/channels/([\w%-]+)/topics/([\w%-]+)', ChannelTopicSubHandler),
         (r'/channels/([\w%-]+)/topics', ChannelTopicListHandler),
+        (r'/channels/([\w%-]+)/messages', ChannelMessagesHandler),
         (r'/channels/([\w%-]+)', ChannelHandler),
         (r'/channels', ChannelListHandler),
         (r'/topics/([\w%-]+)/channels', TopicChannelListHandler),

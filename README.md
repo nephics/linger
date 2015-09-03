@@ -102,12 +102,14 @@ The Linger HTTP API consists of these methods:
 * GET `/channels`  *- list channels*
 * POST `/channels/<channel>` *- add message to channel*
 * GET `/channels/<channel>` *- get message from channel*
+* GET `/channels/<channel>/messages` *- list messages in the channel*
 * GET `/channels/<channel>/topics` *- list topics a channel is subscribed to*
 * PUT `/channels/<channel>/topics/<topic>` *- subscribe channel to a topic*
 * DELETE `/channels/<channel>/topics/<topic>` *- unsubscribe channel from topic*
 * GET `/topics` *- list topics*
 * POST `/topics/<topic>` *- publish message on topic*
 * GET `/topics/<topic>/channels` *- list channels subscribed to topic*
+* GET `/messages/<msg-id>` *- get message*
 * DELETE `/messages/<msg-id>` *- delete message*
 * GET `/stats` *- get server stats*
 
@@ -209,6 +211,16 @@ By adding the `nowait` query parameter, you may prevent long-polling, and have t
 
     curl http://127.0.0.1:8989/channels/test?nowait
 
+## List messages in the channel
+
+The list of messages in the channel can be retrieved using a HTTP GET request to `/channels/<channel>/messages`. Example request:
+
+    curl http://127.0.0.1:8989/channels/test/messages
+
+Example response:
+
+    {"messages": [1, 2, 3, 4]}
+
 ## List topics a channel is subscribed to
 
 The list of topics a channel is subscribed to can be retrieved using a HTTP GET request to `/channels/<channel>/topics`. Example request:
@@ -275,13 +287,23 @@ The server responds with HTTP status code 200, and the response body contains a 
 
     {"channels": ["test"]}
 
+## Get message
+
+Get the specified message using a HTTP GET request to `/messages/<msg-id>`. Example request:
+
+    curl http://127.0.0.1:8989/messages/1
+
+If successful, the server responds with HTTP status code 200, response headers as the ones returned when getting a message from a channel, and the message in the response body. If the message is not found, HTTP status code 404 is returned.
+
+If you just want the message headers, you can retrieve these using a HTTP HEAD request.
+
 ## Delete message
 
-Delete a message from a named channel using a HTTP DELETE request to `/messages/<msg-id>`. Example request:
+Delete the specified message using a HTTP DELETE request to `/messages/<msg-id>`. Example request:
 
     curl -X DELETE http://127.0.0.1:8989/messages/1
 
-If successful, the server responds with HTTP status code 204. But, if the message is not found, HTTP status code 404 is returned.
+If successful, the server responds with HTTP status code 204. If the message is not found, HTTP status code 404 is returned.
 
 ## Get server stats
 

@@ -192,7 +192,8 @@ class Listeners:
         if not self.futures:
             return False
         future, _ = self.futures.pop(0)
-        future.set_result(msg)
+        tornado.ioloop.IOLoop.current().add_callback(
+            lambda f: f.set_result(msg), future)
         logging.debug('Delivering message {}'.format(msg['id']))
         return True
 

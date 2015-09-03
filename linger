@@ -873,7 +873,7 @@ class ChannelHandler(RequestHandler, ReqParamMixin, SNSMixin):
         self.set_header('x-linger-timeout', msg['vt'])
         self.set_header('x-linger-deliver', msg['dm'])
         self.set_header('x-linger-delivered', msg['dc'])
-        self.set_header('x-linger-received', int(msg['ts']))
+        self.set_header('x-linger-received', int(time.time() - msg['ts']))
         self.set_header('x-linger-linger', int(msg['li']))
         self.set_header('x-linger-topic', msg['to'])
 
@@ -1014,7 +1014,7 @@ class MessageHandler(RequestHandler):
         self.set_header('x-linger-timeout', msg['vt'])
         self.set_header('x-linger-deliver', msg['dm'])
         self.set_header('x-linger-delivered', msg['dc'])
-        self.set_header('x-linger-received', int(msg['ts']))
+        self.set_header('x-linger-received', int(time.time() - msg['ts']))
         self.set_header('x-linger-linger', int(msg['li']))
         self.set_header('x-linger-channel', msg['ch'])
         self.set_header('x-linger-topic', msg['to'])

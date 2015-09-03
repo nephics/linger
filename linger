@@ -792,7 +792,7 @@ class ReqParamMixin:
             return
 
         try:
-            deliver = int(self.get_argument('deliver', 10))
+            deliver = int(self.get_argument('deliver', 0))
             if deliver < 0:
                 raise ValueError()
         except ValueError:

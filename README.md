@@ -193,17 +193,17 @@ The server will either reply with HTTP status code 200, and the  message in the 
 
 The server will automatically end a long-polling request after a couple of minutes. If there is no message available, the server replies with HTTP status code 204, and an empty response body.
 
-The response headers with prefix `x-linger-` provide the message ID, the channel name, the priority, the visibility timeout, max delivery attempts, the count of delivery attempts (including this one), and the  seconds since the message was received by the channel. Example:
+The response headers with prefix `x-linger-` contains the Linger message meta data. Example:
 
-    x-linger-msg-id: 1
-    x-linger-channel: test
-    x-linger-priority: 10
-    x-linger-timeout: 60
-    x-linger-deliver: 5
-    x-linger-delivered: 1
-    x-linger-received: 11
-    x-linger-linger: 0
-    x-linger-topic: some-topic
+    x-linger-msg-id: 1          # message ID
+    x-linger-channel: test      # channel name
+    x-linger-priority: 10       # priority
+    x-linger-timeout: 60        # visibility timeout
+    x-linger-deliver: 5         # max delivery attempts
+    x-linger-delivered: 1       # count of delivery attempts (including this one)
+    x-linger-received: 11       # seconds since the message was received by the channel
+    x-linger-linger: 0          # message linger time in the channel (before being discarded)
+    x-linger-topic: some-topic  # topic (if message was published to a topic)
 
 The response content-type will be the same as specified when adding the message to the channel (default is text/plain).
 

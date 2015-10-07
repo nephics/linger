@@ -160,6 +160,7 @@ class Listeners:
 
 class Binlog:
 
+    binlog_version = 2
     binlog_base_name = 'linger-binlog'
     binlog_max_size = 2 * 10**6  # 2 MB in bytes
 
@@ -200,11 +201,11 @@ class Binlog:
 
                 # queue messages loaded from the binlogs
                 for msg_id, msg in sorted(self.queue.messages.items()):
-                    channel = self.queue.create_channel(msg['ch'])
-                    if msg['sh'] > 0.0:
+                    channel = self.queue.create_channel(msg['channel'])
+                    if msg['show'] > 0.0:
                         channel['hidden'].append(msg_id)
                     else:
-                        channel['ready'].put(msg_id, msg['pr'])
+                        channel['ready'].put(msg_id, msg['priority'])
 
             self.binlog_counter = itertools.count(self.current_binlog_no + 1)
             self.open()
@@ -223,7 +224,7 @@ class Binlog:
 
             file_version, self.queue.server_id, self.queue.msg_max_no = (
                 binlog.load())
-            if file_version != 1:
+            if file_version != self.binlog_version:
                 raise Exception('Unknown binlog version {} in file {}'
                                 .format(file_version, name))
             while True:
@@ -279,14 +280,14 @@ class Binlog:
             logging.debug('Binlog read hide msg {}'.format(msg_id))
             if msg_id in self.queue.messages:
                 msg = self.queue.messages[msg_id]
-                msg['dc'] += 1
-                msg['sh'] = binlog.load()
+                msg['dcount'] += 1
+                msg['show'] = binlog.load()
         elif action == self.Action['show']:
             # show
             logging.debug('Binlog read show msg {}'.format(msg_id))
             if msg_id in self.queue.messages:
                 msg = self.queue.messages[msg_id]
-                msg['sh'] = 0.0
+                msg['show'] = 0.0
         else:
             logging.error('Binlog read msg {} unknown action {}'.format(
                 msg_id, action))
@@ -316,7 +317,7 @@ class Binlog:
             return
         self.binlog.dump(self.Event['msg'])
         self.binlog.dump((msg['id'], self.Action['hide']))
-        self.binlog.dump(msg['sh'])
+        self.binlog.dump(msg['show'])
         self.queue.stats['binlog-write'] = (
             self.queue.stats.get('binlog-write', 0) + 1)
         self.rotate()
@@ -359,7 +360,8 @@ class Binlog:
         logging.debug('Binlog open file {}'.format(name))
         if not exists:
             # write fileheader with version info
-            self.binlog.dump((1, self.queue.server_id, self.queue.msg_max_no))
+            self.binlog.dump((self.binlog_version, self.queue.server_id,
+                              self.queue.msg_max_no))
             self.migrate()
         else:
             self.rotate()
@@ -441,7 +443,7 @@ class LingerQueue:
 
         # purge messages that have exceed their rentention time
         purge = [msg for msg_id, msg in self.messages.items()
-                 if msg['pu'] > 0 and msg['pu'] < now]
+                 if msg['purge'] > 0 and msg['purge'] < now]
         for msg in purge:
             logging.debug('Exceeded retention on msg {}'.format(msg['id']))
             self.stats['msg-retention'] = (
@@ -452,13 +454,13 @@ class LingerQueue:
         expired = [(channel, self.messages[msg_id])
                    for channel in self.channels.values()
                    for msg_id in channel['hidden']
-                   if self.messages[msg_id]['sh'] < now]
+                   if self.messages[msg_id]['show'] < now]
         for channel, msg in expired:
             logging.debug('Exceeded timeout on msg {}'.format(msg['id']))
             self.stats['msg-timeouts'] = self.stats.get('msg-timeouts', 0) + 1
-            if msg['dm'] == 0 or msg['dc'] < msg['dm']:
+            if msg['deliver'] == 0 or msg['dcount'] < msg['deliver']:
                 # show the message
-                msg['sh'] = 0.0
+                msg['show'] = 0.0
                 self.binlog.show_msg(msg)
                 channel['hidden'].remove(msg['id'])
 
@@ -470,7 +472,7 @@ class LingerQueue:
                 else:
                     # move it to the ready queue
                     self.stats['msg-show'] = self.stats.get('msg-show', 0) + 1
-                    channel['ready'].put(msg['id'], msg['pr'])
+                    channel['ready'].put(msg['id'], msg['priority'])
             else:
                 # message delivered to many times, delete it
                 self.delete_message(msg)
@@ -492,8 +494,8 @@ class LingerQueue:
         times = os.times()
         bnames = self.binlog.binlog_names()
         total = len(self.messages)
-        urgent = sum(1 for m in self.messages.values() if m['pr'] < 0)
-        normal = sum(1 for m in self.messages.values() if m['pr'] == 0)
+        urgent = sum(1 for m in self.messages.values() if m['priority'] < 0)
+        normal = sum(1 for m in self.messages.values() if m['priority'] == 0)
         hidden = sum(1 for m in self.messages.values() if m['ts'] > 0.0)
         s.update({
             'current-topics': len(self.subscriptions),
@@ -551,20 +553,20 @@ class LingerQueue:
         msg_id = next(self.msg_counter)
         self.msg_max_no = msg_id
         msg = {
-            'id': msg_id,       # set message id
-            'bd': body,         # message body
-            'mi': mime_type,    # mime-type
-            'to': topic,        # message topic
-            'vt': timeout,      # visibility timeout (seconds)
-            'pr': priority,     # message priority
-            'ch': chan_name,    # channel name
-            'ts': now,          # timestamp (when added to the queue)
-            'li': linger,       # message retention (seconds)
-            'pu': purge,        # when to purge the message (timestamp)
-            'dm': deliver,      # max devliver count
-            'dc': 0,            # delivered count
-            'sh': 0.0           # timestamp when message should be shown
-                                # (non-zero if hidden)
+            'id': msg_id,           # set message id
+            'body': body,           # message body
+            'mimetype': mime_type,  # mime-type
+            'topic': topic,         # message topic
+            'timeout': timeout,     # visibility timeout (seconds)
+            'priority': priority,   # message priority
+            'channel': chan_name,   # channel name
+            'ts': now,              # timestamp (when added to the queue)
+            'linger': linger,       # message retention (seconds)
+            'purge': purge,         # when to purge the message (timestamp)
+            'deliver': deliver,     # max devliver count
+            'dcount': 0,            # delivered count
+            'show': 0.0             # timestamp when message should be shown
+                                    # (non-zero if hidden)
         }
         self.messages[msg_id] = msg
 
@@ -586,8 +588,8 @@ class LingerQueue:
 
     def hide_message(self, msg, channel):
         channel['hidden'].append(msg['id'])
-        msg['sh'] = time.time() + msg['vt']
-        msg['dc'] += 1
+        msg['show'] = time.time() + msg['timeout']
+        msg['dcount'] += 1
         self.stats['msg-hide'] = self.stats.get('msg-hide', 0) + 1
         self.binlog.hide_msg(msg)
 
@@ -623,8 +625,8 @@ class LingerQueue:
         msg_id = msg['id']
         logging.debug('Deleting message {}'.format(msg_id))
         del self.messages[msg_id]
-        channel = self.create_channel(msg['ch'])
-        if msg['sh'] > 0.0:
+        channel = self.create_channel(msg['channel'])
+        if msg['show'] > 0.0:
             channel['hidden'].remove(msg_id)
         else:
             channel['ready'].remove(msg_id)
@@ -643,10 +645,10 @@ class LingerQueue:
     def add_subscription(self, chan_name, topic, priority, timeout, deliver,
                          linger):
         subparams = {
-            'vt': timeout,      # visibility timeout (seconds)
-            'pr': priority,     # message priority
-            'li': linger,       # message retention (seconds)
-            'dm': deliver,      # max devliver count
+            'timeout': timeout,      # visibility timeout (seconds)
+            'priority': priority,     # message priority
+            'linger': linger,       # message retention (seconds)
+            'deliver': deliver,      # max devliver count
             'ts': time.time()   # timestamp (when created)
         }
         subscribers = self.subscriptions.setdefault(topic, {})
@@ -684,8 +686,8 @@ class LingerQueue:
             return published
         logging.debug('Publishing on {}, {} subscribers'.format(
             topic, len(self.subscriptions[topic])))
-        trans = {'vt': 'timeout', 'pr': 'priority', 'li': 'linger',
-                 'dm': 'deliver'}
+        trans = {'timeout': 'timeout', 'priority': 'priority',
+                 'linger': 'linger', 'deliver': 'deliver'}
         for chan_name, subparams in self.subscriptions[topic].items():
             params = {p: subparams[k] for k, p in trans.items()}
             msg_id = self.add_message(chan_name, body, mime_type, topic=topic,
@@ -797,18 +799,18 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
             return
 
         # set response headers
-        self.set_header('Content-Type', msg['mi'])
+        self.set_header('Content-Type', msg['mimetype'])
         self.set_header('x-linger-msg-id', msg['id'])
-        self.set_header('x-linger-priority', msg['pr'])
-        self.set_header('x-linger-timeout', msg['vt'])
-        self.set_header('x-linger-deliver', msg['dm'])
-        self.set_header('x-linger-delivered', msg['dc'])
+        self.set_header('x-linger-priority', msg['priority'])
+        self.set_header('x-linger-timeout', msg['timeout'])
+        self.set_header('x-linger-deliver', msg['deliver'])
+        self.set_header('x-linger-delivered', msg['dcount'])
         self.set_header('x-linger-received', int(time.time() - msg['ts']))
-        self.set_header('x-linger-linger', int(msg['li']))
-        self.set_header('x-linger-topic', msg['to'])
+        self.set_header('x-linger-linger', int(msg['linger']))
+        self.set_header('x-linger-topic', msg['topic'])
 
         # deliver the message
-        self.finish(msg['bd'])
+        self.finish(msg['body'])
 
     def on_connection_close(self):
         if self.future and not self.future.done():
@@ -926,19 +928,19 @@ class MessageHandler(RequestHandler):
             return
 
         # set response headers
-        self.set_header('Content-Type', msg['mi'])
+        self.set_header('Content-Type', msg['mimetype'])
         self.set_header('x-linger-msg-id', msg['id'])
-        self.set_header('x-linger-priority', msg['pr'])
-        self.set_header('x-linger-timeout', msg['vt'])
-        self.set_header('x-linger-deliver', msg['dm'])
-        self.set_header('x-linger-delivered', msg['dc'])
+        self.set_header('x-linger-priority', msg['priority'])
+        self.set_header('x-linger-timeout', msg['timeout'])
+        self.set_header('x-linger-deliver', msg['deliver'])
+        self.set_header('x-linger-delivered', msg['dcount'])
         self.set_header('x-linger-received', int(time.time() - msg['ts']))
-        self.set_header('x-linger-linger', int(msg['li']))
-        self.set_header('x-linger-channel', msg['ch'])
-        self.set_header('x-linger-topic', msg['to'])
+        self.set_header('x-linger-linger', int(msg['linger']))
+        self.set_header('x-linger-channel', msg['channel'])
+        self.set_header('x-linger-topic', msg['topic'])
 
         # deliver the message
-        self.finish(msg['bd'])
+        self.finish(msg['body'])
 
     def delete(self, msg_id):
         try:

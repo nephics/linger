@@ -109,7 +109,7 @@ class Listeners:
 
         # the interval in ms between pruning callbacks (in ms)
         self.periodic_callback = tornado.ioloop.PeriodicCallback(
-                self.heartbeat, 10000.0)
+            self.heartbeat, 10000.0)
         self.periodic_callback.start()
 
     def now_ms(self):
@@ -478,7 +478,7 @@ class LingerQueue:
         # check if channel is in use, otherwise remove it
         unused = [(n, c) for n, c in self.channels.items()
                   if not (c['ready'] or c['hidden'] or c['listeners']) and (
-                     c['ts'] + self.channel_ttl < now)]
+                      c['ts'] + self.channel_ttl < now)]
         for name, channel in unused:
             # channel is no longer in use
             logging.debug('Removing empty channel {}'.format(name))
@@ -544,7 +544,7 @@ class LingerQueue:
         if msg_size > self.msg_max_size:
             raise ValueError('The message size {} bytes exceeed the maximum '
                              'allowed {} bytes.'.format(
-                                msg_size, self.msg_max_size))
+                                 msg_size, self.msg_max_size))
         channel = self.create_channel(chan_name)
         now = time.time()
         purge = now + linger if linger > 0 else 0

@@ -10,10 +10,10 @@ setup(name='linger',
       scripts=['linger'],
       install_requires=['tornado>=4.2.1'],
       classifiers=[
-        'Development Status :: 4 - Beta',
-        'Intended Audience :: Developers',
-        'License :: OSI Approved :: Apache Software License',
-        'Programming Language :: Python :: 3',
-        'Topic :: System :: Distributed Computing',
-        'Topic :: System :: Networking'
+          'Development Status :: 4 - Beta',
+          'Intended Audience :: Developers',
+          'License :: OSI Approved :: Apache Software License',
+          'Programming Language :: Python :: 3',
+          'Topic :: System :: Distributed Computing',
+          'Topic :: System :: Networking'
       ])

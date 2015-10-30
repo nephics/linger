@@ -182,33 +182,37 @@ class Binlog:
         # access to the queue
         self.queue = linger_queue
 
-        # restore state by reading existing binlogs into the
-        #  shared messages dict.
         if self.binlog_dir:
-            bnames = self.binlog_names()
-            if bnames:
-                # read existing binlogs
-                for binlog_no, name in bnames:
-                    try:
-                        self.read_binlog(binlog_no, name)
-                    except Exception as e:
-                        logging.error('Failed to read binlog {}: {}'.format(
-                            name, str(e)))
-                        traceback.print_exc()
-                        sys.exit(1)
+            self.restore()
 
-                self.current_binlog_no = binlog_no
+    def restore(self):
+        """Restore state by reading existing binlogs into the
+           shared messages dict.
+        """
+        bnames = self.binlog_names()
+        if bnames:
+            # read existing binlogs
+            for binlog_no, name in bnames:
+                try:
+                    self.read_binlog(binlog_no, name)
+                except Exception as e:
+                    logging.error('Failed to read binlog {}: {}'.format(
+                        name, str(e)))
+                    traceback.print_exc()
+                    sys.exit(1)
 
-                # queue messages loaded from the binlogs
-                for msg_id, msg in sorted(self.queue.messages.items()):
-                    channel = self.queue.create_channel(msg['channel'])
-                    if msg['show'] > 0.0:
-                        channel['hidden'].append(msg_id)
-                    else:
-                        channel['ready'].put(msg_id, msg['priority'])
+            self.current_binlog_no = binlog_no
 
-            self.binlog_counter = itertools.count(self.current_binlog_no + 1)
-            self.open()
+            # queue messages loaded from the binlogs
+            for msg_id, msg in sorted(self.queue.messages.items()):
+                channel = self.queue.create_channel(msg['channel'])
+                if msg['show'] > 0.0:
+                    channel['hidden'].append(msg_id)
+                else:
+                    channel['ready'].put(msg_id, msg['priority'])
+
+        self.binlog_counter = itertools.count(self.current_binlog_no + 1)
+        self.open()
 
     def binlog_names(self):
         if not self.binlog_dir:

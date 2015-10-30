@@ -37,9 +37,6 @@ define('debug', default=False, help='run in debug mode', type=bool,
        group='application')
 define('port', default=8989, help='run on the given port', type=int,
        group='application')
-define('shutdown_timeout', default=1, type=float, help='grace time in seconds'
-       ', following stop of the http server, before stopping the ioloop',
-       group='application')
 define('binlog_dir', default=None, type=str, help='binlog directory',
        group='application')
 
@@ -991,9 +988,9 @@ def handle_signals(http_server, shutdown_callback=None):
         # stop accepting requests
         http_server.stop()
 
-        # wait (default 1 sec) for requests to finish, then die
+        # wait 1 sec for requests to finish, then die
         tornado.ioloop.IOLoop.current().add_timeout(
-            time.time() + options.shutdown_timeout, shutdown)
+            time.time() + 1.0, shutdown)
 
     state = {}
     signal.signal(signal.SIGINT, signal_handler)

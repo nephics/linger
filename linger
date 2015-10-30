@@ -35,6 +35,8 @@ define('config', type=str, help='path to config file',
        callback=lambda path: parse_config_file(path, final=False))
 define('debug', default=False, help='run in debug mode', type=bool,
        group='application')
+define('hlm', default=1000, type=int, group='application',
+       help='high-level mark, max number of messages to queue per channel')
 define('port', default=8989, help='run on the given port', type=int,
        group='application')
 define('binlog_dir', default=None, type=str, help='binlog directory',
@@ -549,6 +551,9 @@ class LingerQueue:
                              'allowed {} bytes.'.format(
                                  msg_size, self.msg_max_size))
         channel = self.create_channel(chan_name)
+        if len(channel['ready']) + len(channel['hidden']) == options.hlm:
+            raise RuntimeError('Channel {} is at the high-level mark with {} '
+                               'messages'.format(chan_name, options.hlm))
         now = time.time()
         purge = now + linger if linger > 0 else 0
         msg_id = next(self.msg_counter)
@@ -691,10 +696,14 @@ class LingerQueue:
                  'linger': 'linger', 'deliver': 'deliver'}
         for chan_name, subparams in self.subscriptions[topic].items():
             params = {p: subparams[k] for k, p in trans.items()}
-            msg_id = self.add_message(chan_name, body, mime_type, topic=topic,
-                                      **params)
-            published[chan_name] = msg_id
-            self.stats['publish'] = self.stats.get('publish', 0) + 1
+            try:
+                msg_id = self.add_message(chan_name, body, mime_type,
+                                          topic=topic, **params)
+            except RuntimeError as e:
+                logging.warning(e)
+            else:
+                published[chan_name] = msg_id
+                self.stats['publish'] = self.stats.get('publish', 0) + 1
         return published
 
     def list_channel_messages(self, chan_name):
@@ -833,8 +842,9 @@ class ChannelHandler(RequestHandler, ReqParamMixin):
         try:
             msg_id = self.queue.add_message(
                 chan_name, body, mime_type, **params)
-        except ValueError as e:
-            self.send_error(400, reason=e.args[0])
+        except (ValueError, RuntimeError) as e:
+            code = 400 if isinstance(e, ValueError) else 500
+            self.send_error(code, reason=e.args[0])
             return
 
         self.set_status(202)

@@ -37,7 +37,7 @@ A message can be assigned a priority which is different from the default, so mes
 
 You may set a retention (linger) period on a message, to limit the lifetime of the message in the channel. This can be useful in the case where the channel (for some reason) has no consumers, and you want to limit the growth of the number of messages in the channel.
 
-Linger has a high-level mark limiting the number of messages that a channel may contain. The default is 1000 messages, which may be changed using the `hwl` command line argument. 
+Linger has a high-level mark limiting the number of messages that a channel may contain. The default is 1000 messages, which may be changed using the `hlm` command line option. 
 
 ### Pubsub
 

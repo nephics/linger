@@ -3,10 +3,10 @@ from setuptools import setup
 setup(name='linger',
       version='0.1.0',
       description='Message queue and pubsub service with HTTP API',
-      author='Jacob Sondergaard',
+      author='Jacob Svensson',
       author_email='jacob@nephics.com',
       license="http://www.apache.org/licenses/LICENSE-2.0",
-      url='https://bitbucket.org/nephics/linger',
+      url='https://github.com/nephics/linger',
       scripts=['linger'],
       install_requires=['tornado>=4.2.1'],
       classifiers=[

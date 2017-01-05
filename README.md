@@ -4,7 +4,7 @@
 
 ## About
 
-The [linger](https://bitbucket.org/nephics/linger) package provides the Linger server, which is a message queue and pubsub service with a REST HTTP API.
+The [linger](https://github.com/nephics/linger) package provides the Linger server, which is a message queue and pubsub service with a REST HTTP API.
 
 The message queue distributes messages in channels from publishers to consumers. The message queue can be used in situations where a work queue is needed, e.g., for running time-consuming tasks asynchronously.
 
@@ -63,7 +63,7 @@ When subscribing a channel to a topic, you can set the message priority, retenti
 
 Install the `linger` script in `/usr/local/bin` (on Linux and OS X) with the following pip command:
 
-    pip install https://bitbucket.org/nephics/linger/get/master.zip
+    pip install https://github.com/nephics/linger/archive/master.zip
 
 This will also ensure that the dependency package `tornado` is installed.
 

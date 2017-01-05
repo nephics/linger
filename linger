@@ -651,11 +651,11 @@ class LingerQueue:
     def add_subscription(self, chan_name, topic, priority, timeout, deliver,
                          linger):
         subparams = {
-            'timeout': timeout,      # visibility timeout (seconds)
-            'priority': priority,     # message priority
-            'linger': linger,       # message retention (seconds)
-            'deliver': deliver,      # max devliver count
-            'ts': time.time()   # timestamp (when created)
+            'timeout': timeout,    # visibility timeout (seconds)
+            'priority': priority,  # message priority
+            'linger': linger,      # message retention (seconds)
+            'deliver': deliver,    # max devliver count
+            'ts': time.time()      # timestamp (when created)
         }
         subscribers = self.subscriptions.setdefault(topic, {})
         subscribers[chan_name] = subparams

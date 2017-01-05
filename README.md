@@ -63,7 +63,7 @@ When subscribing a channel to a topic, you can set the message priority, retenti
 
 Install the `linger` script in `/usr/local/bin` (on Linux and OS X) with the following pip command:
 
-    pip install https://bitbucket.org/nephics/linger/get/default.zip
+    pip install https://bitbucket.org/nephics/linger/get/master.zip
 
 This will also ensure that the dependency package `tornado` is installed.
 
@@ -73,7 +73,7 @@ Start a Linger server by running the script:
 
     linger
 
-from the command line, or use a process-deamon tool like Ubuntu's Upstart or [Supervisor](http://supervisord.org).
+from the command line, or use systemd or a process-deamon tool like [Supervisor](http://supervisord.org).
 
 The default port is 8989. This and other options can be set from the command line, or using a config file (with path specified as a command line option). Command line options can be listed using argument `--help`.
 

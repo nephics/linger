@@ -1,22 +1,18 @@
 # Linger
 
-*-- Message queue and pubsub service with HTTP API*
+*-- Message queue and pub-sub service with HTTP API*
 
 ## About
 
-The [linger](https://github.com/nephics/linger) package provides the Linger server, which is a message queue and pubsub service with a REST HTTP API.
+The [linger](https://github.com/nephics/linger) package provides the Linger server, which is a message queue and pub-sub service with a REST HTTP API.
 
 The message queue distributes messages in channels from publishers to consumers. The message queue can be used in situations where a work queue is needed, e.g., for running time-consuming tasks asynchronously.
 
-The pubsub (publish-subscribe) functionality distribute messages from publishers to subscribers (both fan-in and fan-out). It can be used in situations where message notification is needed, e.g., for delivering status updates, or change notifications.
+The pub-sub (publish-subscribe) service distribute messages from publishers to subscribers (both fan-in and fan-out). It can be used in situations where message notification is needed, e.g., for delivering status updates, or change notifications.
 
-The Linger server is implemented in Python 3 using a non-blocking, single-threaded [Tornado web server](http://www.tornadoweb.org/).
+The HTTP API server is implemented in Python 3 using a non-blocking, single-threaded [Tornado web server](http://www.tornadoweb.org/).
 
-The code and documentation is licensed under the Apache License v2.0, see more in the LICENSE file.
-
-## Overview
-
-### Message queue
+## Message queue
 
 Linger provides a message queue where messages are added by producers, and made available to consumers.
 
@@ -26,26 +22,26 @@ Consumers may subscribe and consume messages from any named channel, but is limi
 
 Messages are delivered to consumers at least once, and they may be re-delivered, if the consumer doesn't delete the delivered message.
 
-#### The life of a message in the queue
+Messages can be in one of two states: ready or hidden. Where 'ready' messages are those available for delivery to consumers, and hidden messages are not made available to consumers. A message is hidden during a visibility timeout, after being delivered to a consumer.
+
+### The life of a message in the queue
 
 1. A producer adds a new message to a named channel (the queue).
-2. A consumer requests a message from the same channel, the message is returned.
-3. Once the message has been delivered, it will not be delivered again until the visibility timeout has passed. (This keeps multiple consumers from requesting the same message.)
-4. When the consumer has successfully processed a message, they delete the message from the channel.
+2. A consumer requests a message from the channel, the message is delivered to the consumer.
+3. Once the message has been delivered, it will be hidden and not delivered again until the visibility timeout has passed. (This keeps multiple consumers from requesting the same message.)
+4. When the consumer has successfully processed the message, they delete the message from the channel.
 
 A message can be assigned a priority which is different from the default, so messages are delivered in a non-sequential order (an order not based on the time messages are added to the queue).
 
-You may set a retention (linger) period on a message, to limit the lifetime of the message in the channel. This can be useful in the case where the channel (for some reason) has no consumers, and you want to limit the growth of the number of messages in the channel.
+A retention (linger) period may be set on a message, to limit the lifetime of the message in the channel. This can be useful when the channel (for some reason) has no consumers, and you want to limit the age of messages in the channel.
 
-Linger has a high-level mark limiting the number of messages that a channel may contain. The default is 1000 messages, which may be changed using the `hlm` command line option. 
+## Pub-sub service
 
-### Pubsub
-
-Linger provides pubsub functionality where messages are posted by publishers, and made available to subscribers.
+Linger provides pub-sub functionality where messages are posted by publishers, and made available to subscribers.
 
 A message is published on a named topic, and is distributed by Linger to one or more subscribed channels. Each channel may have one or more subscribers that consume the messages of that channel.
 
-#### The life of a published message
+### The life of a published message
 
 1. A publisher post a new message to a named topic.
 2. The message is distributed to channels subscribed to the topic.
@@ -53,7 +49,7 @@ A message is published on a named topic, and is distributed by Linger to one or 
 4. Once the message has been delivered, it will not be delivered again until the visibility timeout has passed.
 5. When the publisher has successfully received a message, they delete the message from the channel.
 
-Notice that step 3 to 5 here is the same as step 2 to 4 in "the life of a message in the queue". In a standard pubsub model there is only one subscriber per channel, but Linger allows for multiple subscribers, which consume the messages delivered to the channel. Hence, multiple subscribers to same channel will not see the same messages.
+Notice that step 3 to 5 here is the same as step 2 to 4 in "the life of a message in the queue". In a standard pub-sub model there is only one subscriber per channel, but Linger allows for multiple subscribers, which consume the messages delivered to the channel. Hence, multiple subscribers to same channel will not see the same messages.
 
 When subscribing a channel to a topic, you can set the message priority, retention (linger) period, etc., which will be applied to messages on that topic delivered to the channel.
 
@@ -73,11 +69,13 @@ Start a Linger server by running the script:
 
     linger
 
-from the command line, or use systemd or a process-deamon tool like [Supervisor](http://supervisord.org).
+from the command line, or use *systemd* or a process-daemon tool like [Supervisor](http://supervisord.org).
 
 The default port is 8989. This and other options can be set from the command line, or using a config file (with path specified as a command line option). Command line options can be listed using argument `--help`.
 
-The server support the use of binlogs for maintaining messaging history and the current status, in the event of a server/process restart. Use the `binlog_dir` command line parameter to enable the use of binlogs.
+By default the database is kept in memory, but the server can store the database on disk, both to reduce memory footprint and to allow for full restore in the event of a server/process restart. Use the `--dbfile` command line option to store the database on disk.
+
+It is also possible to define a global a high-level mark limiting the number of messages in any channel. The default is no high-level mark, this setting may be changed using the `--hlm` command line option. 
 
 ## Security
 
@@ -98,16 +96,16 @@ Linger is not currently optimised with regard to memory usage, and it has not be
 The Linger HTTP API consists of these methods:
 
 * GET `/channels`  *- list channels*
-* POST `/channels/<channel>` *- add message to channel*
 * GET `/channels/<channel>` *- get message from channel*
-* GET `/channels/<channel>/messages` *- list messages in the channel*
+* POST `/channels/<channel>` *- add message to channel*
+* DELETE `/channels/<channel>` *- drain the channel*
+* GET `/channels/<channel>/stats` *- get channel stats*
 * GET `/channels/<channel>/topics` *- list topics a channel is subscribed to*
 * PUT `/channels/<channel>/topics/<topic>` *- subscribe channel to a topic*
 * DELETE `/channels/<channel>/topics/<topic>` *- unsubscribe channel from topic*
 * GET `/topics` *- list topics*
 * POST `/topics/<topic>` *- publish message on topic*
 * GET `/topics/<topic>/channels` *- list channels subscribed to topic*
-* GET `/messages/<msg-id>` *- get message*
 * DELETE `/messages/<msg-id>` *- delete message*
 * GET `/stats` *- get server stats*
 
@@ -181,6 +179,8 @@ Example request with a text message:
          -d priority=10 -d timeout=60 -d deliver=5 \
          -d linger=60 http://127.0.0.1:8989/channels/test
 
+If the channel is at the high-level-mark, the message cannot be added, and the server responds with the HTTP status code 507 Insufficient Storage.
+
 ## Get message from a channel
 
 Get a message from a named channel using a HTTP GET request to `/channels/<channel>`. Example request:
@@ -209,15 +209,27 @@ By adding the `nowait` query parameter, you may prevent long-polling, and have t
 
     curl http://127.0.0.1:8989/channels/test?nowait
 
-## List messages in the channel
+## Drain the channel
 
-The list of messages in the channel can be retrieved using a HTTP GET request to `/channels/<channel>/messages`. Example request:
+Drain (discard) all messages from channel using a HTTP DELETE request to `/channels/<channel>`. Example request:
 
-    curl http://127.0.0.1:8989/channels/test/messages
+    curl -X DELETE http://127.0.0.1:8989/channels/test
+
+The server responds with HTTP status code 204.
+
+
+## Get channel stats
+
+Retrieve statistics about the messages in a channel using a HTTP GET request to `/channels/<channel>/stats`. Example request:
+
+    curl -X GET http://127.0.0.1:8989/channels/test/stats
+
+The server responds with HTTP status code 200, and the response body contains a JSON encoded mapping of stats about messages in the channel.
 
 Example response:
 
-    {"messages": [1, 2, 3, 4]}
+    {"ready": 2, "hidden": 0}
+
 
 ## List topics a channel is subscribed to
 
@@ -249,7 +261,7 @@ Unsubscribe a channel from a named topic using a HTTP DELETE request to `/channe
 
     curl -X DELETE http://127.0.0.1:8989/channels/test/topics/some-topic
 
-The server responds with HTTP status code 204. But, if the subscription does not exist, the server responds with HTTP status code 404.
+The server responds with HTTP status code 204.
 
 ## List topics
 
@@ -285,16 +297,6 @@ The server responds with HTTP status code 200, and the response body contains a 
 
     {"channels": ["test"]}
 
-## Get message
-
-Get the specified message using a HTTP GET request to `/messages/<msg-id>`. Example request:
-
-    curl http://127.0.0.1:8989/messages/1
-
-If successful, the server responds with HTTP status code 200, response headers as the ones returned when getting a message from a channel, and the message in the response body. If the message is not found, HTTP status code 404 is returned.
-
-If you just want the message headers, you can retrieve these using a HTTP HEAD request.
-
 ## Delete message
 
 Delete the specified message using a HTTP DELETE request to `/messages/<msg-id>`. Example request:
@@ -310,3 +312,11 @@ Retrieve server statistics and runtime information using a HTTP GET request to `
     curl -X GET http://127.0.0.1:8989/stats
 
 The server responds with HTTP status code 200, and the response body contains a JSON encoded mapping of the available stats.
+
+# Support
+
+Support for the software can be provided on a commercial basis, please see [www.nephics.com](http://www.nephics.com) for contact information.
+
+# License
+
+The code and documentation is licensed under the Apache License v2.0, see more in the LICENSE file.

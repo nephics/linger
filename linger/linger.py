@@ -20,7 +20,7 @@ import tornado.httpserver
 import tornado.ioloop
 import tornado.web
 
-from tornado.gen import coroutine
+from tornado.gen import coroutine, with_timeout, TimeoutError
 from tornado.options import (define, options, parse_config_file,
                              parse_command_line)
 
@@ -821,34 +821,39 @@ class HomeHandler(RequestHandler):
 def handle_signals(http_server, shutdown_callback=None):
     """Make the http server shutdown on SIGINT and SIGTERM"""
 
-    def signal_handler(*args):
-        # handle SIGTERM (kill) and SIGINT (Ctrl-C) signals
+    state = {}
+    io_loop = tornado.ioloop.IOLoop.current()
+
+    @coroutine
+    def on_shutdown():
 
         if state.get('shutdown'):
             # shutdown is in progress
             return
-        state['shutdown'] = True
-        io_loop = tornado.ioloop.IOLoop.current()
 
+        state['shutdown'] = True
         logging.info('Initiating shutdown')
 
         # stop accepting requests
         http_server.stop()
 
-        # force close all open connections
-        io_loop.run_sync(http_server.close_all_connections,
-                         timeout=1.0)
+        try:
+            # force close all open connections
+            yield with_timeout(io_loop.time()+1.0, http_server.close_all_connections())
+        except TimeoutError:
+            logging.error('TimeoutError when closing all connections.')
 
         if shutdown_callback:
             shutdown_callback()
 
-        tornado.ioloop.IOLoop.current().stop()
+        io_loop.stop()
         logging.info('Shutdown completed')
         sys.exit(0)
 
-    state = {}
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    # handle SIGTERM (kill) and SIGINT (Ctrl-C) signals
+    sdcb = lambda sig, frame: io_loop.add_callback_from_signal(on_shutdown)
+    signal.signal(signal.SIGINT, sdcb)
+    signal.signal(signal.SIGTERM, sdcb)
 
 
 def make_app():

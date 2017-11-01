@@ -24,7 +24,7 @@ from tornado.gen import coroutine, with_timeout, TimeoutError
 from tornado.options import (define, options, parse_config_file,
                              parse_command_line)
 
-__version__ = '0.2.0'
+__version__ = '0.2.1'
 
 
 define('config', type=str, help='path to config file',
@@ -203,7 +203,7 @@ class LingerQueue:
             'server_id': uuid.uuid4().hex  # a random server_id
         }
         # create tables
-        self.db.execute('create table config (id,key,value)')
+        self.db.execute('create table config (key unique,value)')
         # columns of table 'messages'
         # id        unique id
         # body      the message body
@@ -233,7 +233,7 @@ class LingerQueue:
         # ts         timestamp (when created)
         self.db.execute(
             'create table subscriptions (topic,channel,timeout,priority,'
-            'linger,deliver,ts)')
+            'linger,deliver,ts, primary key (topic, channel))')
         # save config
         self.db.executemany(
             'insert or replace into config (key,value) values (?,?)',

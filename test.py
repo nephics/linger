@@ -188,17 +188,24 @@ class UnitTestMethods(AsyncTestCase):
 
     @gen_test
     def test_publish_subscribe(self):
+        """Publish-Subscribe test"""
         self.kwargs['topic'] = 'some-topic'
         sub_kwargs = {k: self.kwargs[k] for k in (
             'chan_name', 'topic', 'priority', 'timeout', 'deliver', 'linger')}
+        # add subscription twice (and confirm that there is no "double-delivery")
+        self.q.add_subscription(**sub_kwargs)
         self.q.add_subscription(**sub_kwargs)
 
+        # publish message on topic
         pub_kwargs = {k: self.kwargs[k] for k in (
             'topic', 'body', 'mime_type')}
         self.q.publish_message(**pub_kwargs)
-        future = self.q.get_message(self.kwargs['chan_name'], nowait=True)
-        msg = yield future
+        # get message from channel (subscribed to topic)
+        msg = yield self.q.get_message(self.kwargs['chan_name'], nowait=True)
         self.check_msg(msg, self.kwargs)
+        # check for double-delivery
+        msg2 = yield self.q.get_message(self.kwargs['chan_name'], nowait=True)
+        self.assertIsNone(msg2)
 
     @gen_test
     def test_timeout(self):
@@ -244,12 +251,13 @@ class UnitTestMethods(AsyncTestCase):
         self.kwargs['timeout'] = 1  # hide for only 1 sec
         self.q.add_message(**self.kwargs)
         msg = yield self.q.get_message(self.kwargs['chan_name'], nowait=True)
+        self.check_msg(msg, self.kwargs)
 
         # test: message has been purged
         yield sleep(1.2)
         future = self.q.get_message(self.kwargs['chan_name'], nowait=True)
-        msg = yield future
-        self.assertIsNone(msg)
+        msg2 = yield future
+        self.assertIsNone(msg2)
 
     @gen_test
     def test_priority(self):
@@ -274,6 +282,29 @@ class UnitTestMethods(AsyncTestCase):
                 self.kwargs['chan_name'], nowait=True)
             self.assertEqual(msg['priority'], i-1)
             self.assertEqual(int(msg['body']), i)
+
+    @gen_test
+    def test_touch(self):
+        """Timeout-Touch test"""
+        self.kwargs['timeout'] = 1  # hide for only 1 sec
+        self.q.add_message(**self.kwargs)
+
+        msg = yield self.q.get_message(self.kwargs['chan_name'], nowait=True)
+        self.check_msg(msg, self.kwargs)
+
+        # touch msg 3 times, before it is shown again
+        for _ in range(3):
+            yield sleep(0.9)
+            self.assertTrue(self.q.touch_message_from_id(msg['id']))
+            # test that the message is not delivered (because it is hidden)
+            msg2 = yield self.q.get_message(
+                self.kwargs['chan_name'], nowait=True)
+            self.assertIsNone(msg2)
+        yield sleep(1.2)
+        # test that msg is timed out and re-delivered
+        msg3 = yield self.q.get_message(self.kwargs['chan_name'], nowait=True)
+        self.assertIsNotNone(msg3)
+        self.assertEqual(msg['id'], msg3['id'])
 
 
 class HTTPTestMethods(AsyncHTTPTestCase):

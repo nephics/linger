@@ -24,7 +24,7 @@ from tornado.gen import coroutine, with_timeout, TimeoutError
 from tornado.options import (define, options, parse_config_file,
                              parse_command_line)
 
-__version__ = '0.2.1'
+__version__ = '0.2.2'
 
 
 define('config', type=str, help='path to config file',
@@ -191,6 +191,9 @@ class LingerQueue:
         if 'config' not in self.db.table_names():
             self.init_db()
         else:
+            if dbfile != ':memory:':
+                bts = self.db.compact()
+                logging.info('Compacted database, saved {} bytes'.format(bts))
             self.restore_from_db()
 
         self.periodic_callback = tornado.ioloop.PeriodicCallback(
@@ -289,9 +292,10 @@ class LingerQueue:
         if undelivered:
             # set messages to be visible (out of timeout)
             self.db.executemany('update messages set show=0.0 where id=?',
-                                (undelivered,))
+                                ((i,) for i in undelivered))
         if purge:
-            self.db.executemany('delete from messages where id=?', (purge,))
+            self.db.executemany('delete from messages where id=?',
+                                ((i,) for i in purge))
         if purge or undelivered:
             self.db.commit()
 
@@ -482,6 +486,17 @@ class LingerQueue:
     def count_deleted(self, msg_id):
         logging.debug('Deleting message {}'.format(msg_id))
         self.stats['msg-delete'] = self.stats.get('msg-delete', 0) + 1
+
+    def touch_message_from_id(self, msg_id):
+        row = self.db.execute('select show, timeout from messages where id=?',
+                              (msg_id,)).fetchone()
+        if row is None:
+            return False
+        show = time.time() + row['timeout']
+        self.db.execute('update messages set show=? where id=?', (show, msg_id))
+        self.db.commit()
+        self.stats['msg-touch'] = self.stats.get('msg-touch', 0) + 1
+        return True
 
     def delete_message_from_id(self, msg_id):
         delete_count = self.db.execute(
@@ -786,6 +801,23 @@ class TopicChannelListHandler(RequestHandler):
         self.finish({'channels': channels})
 
 
+class MessageTouchHandler(RequestHandler):
+
+    def post(self, msg_id):
+        """/messages/<msg-id>/touch - touch message (reset timeout)"""
+        try:
+            msg_id = int(msg_id)
+            if msg_id < 0:
+                raise ValueError()
+        except ValueError:
+            self.send_error(400, reason='Invalid message number.')
+
+        if self.queue.touch_message_from_id(msg_id):
+            self.set_status(204)
+        else:
+            self.set_status(404, reason='Message not found.')
+
+
 class MessageHandler(RequestHandler):
 
     def delete(self, msg_id):
@@ -875,6 +907,7 @@ def make_app():
         (r'/topics/([\w%-]+)/channels', TopicChannelListHandler),
         (r'/topics/([\w%-]+)', TopicHandler),
         (r'/topics', TopicListHandler),
+        (r'/messages/(\d+)/touch', MessageTouchHandler),
         (r'/messages/(\d+)', MessageHandler),
         (r'/stats', StatsHandler)
     }

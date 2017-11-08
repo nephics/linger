@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='linger',
-      version='0.2.1',
+      version='0.2.2',
       description='Message queue and pubsub service with HTTP API',
       author='Jacob Svensson',
       author_email='jacob@nephics.com',

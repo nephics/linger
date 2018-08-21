@@ -87,8 +87,6 @@ Long-polling duration is limited to about 2 mins.
 
 Messages are by default limited to 256 KB in size, and may contain any sequences of bytes.
 
-The binlogs are rotated when the file size exceeds 1 MB, and unused binlogs are automatically removed.
-
 Linger is not currently optimised with regard to memory usage, and it has not been tested for high-performance usage scenarios, such as delivering billions of messages a day. But, for most real world situations, Linger will serve you reliably.
 
 ## HTTP API overview

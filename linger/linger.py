@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Linger - Message queue and pubsub service with HTTP API
 
-Copyright 2015-2017 Nephics AB
+Copyright 2015-2018 Nephics AB
 Licensed under the Apache License, Version 2.0
 """
 
@@ -9,22 +9,19 @@ import logging
 import os
 import os.path
 import platform
-import signal
 import sqlite3
 import sys
 import time
 import uuid
 
 import tornado.concurrent
-import tornado.httpserver
 import tornado.ioloop
 import tornado.web
 
-from tornado.gen import coroutine, with_timeout, TimeoutError
-from tornado.options import (define, options, parse_config_file,
-                             parse_command_line)
+from tornado.gen import coroutine
+from tornado.options import (define, options, parse_config_file)
 
-__version__ = '0.2.2'
+__version__ = '1.0.0'
 
 
 define('config', type=str, help='path to config file',
@@ -850,44 +847,6 @@ class HomeHandler(RequestHandler):
                      'hostname': platform.uname()[1]})
 
 
-def handle_signals(http_server, shutdown_callback=None):
-    """Make the http server shutdown on SIGINT and SIGTERM"""
-
-    state = {}
-    io_loop = tornado.ioloop.IOLoop.current()
-
-    @coroutine
-    def on_shutdown():
-
-        if state.get('shutdown'):
-            # shutdown is in progress
-            return
-
-        state['shutdown'] = True
-        logging.info('Initiating shutdown')
-
-        # stop accepting requests
-        http_server.stop()
-
-        try:
-            # force close all open connections
-            yield with_timeout(io_loop.time()+1.0, http_server.close_all_connections())
-        except TimeoutError:
-            logging.error('TimeoutError when closing all connections.')
-
-        if shutdown_callback:
-            shutdown_callback()
-
-        io_loop.stop()
-        logging.info('Shutdown completed')
-        sys.exit(0)
-
-    # handle SIGTERM (kill) and SIGINT (Ctrl-C) signals
-    sdcb = lambda sig, frame: io_loop.add_callback_from_signal(on_shutdown)
-    signal.signal(signal.SIGINT, sdcb)
-    signal.signal(signal.SIGTERM, sdcb)
-
-
 def make_app():
     linger_queue = LingerQueue(options.dbfile, options.hlm)
 
@@ -914,23 +873,3 @@ def make_app():
 
     application = tornado.web.Application(handlers, **settings)
     return application, settings
-
-
-def main():
-    parse_command_line()
-    application, settings = make_app()
-    http_server = tornado.httpserver.HTTPServer(
-        application, xheaders=not options.debug)
-    http_server.listen(options.port)
-    logging.info('Starting server at port %d' % options.port)
-    if options.debug:
-        logging.debug('Running in debug mode')
-
-    # make the server stop on SIGINT and SIGTERM
-    handle_signals(http_server, settings.get('shutdown_callback'))
-
-    tornado.ioloop.IOLoop.current().start()
-
-
-if __name__ == '__main__':
-    main()

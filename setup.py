@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name='linger',
-      version='0.2.2',
+      version='1.0.0',
       description='Message queue and pubsub service with HTTP API',
       author='Jacob Svensson',
       author_email='jacob@nephics.com',
@@ -15,10 +15,11 @@ setup(name='linger',
       },
       install_requires=['tornado>=4.5.2'],
       classifiers=[
-          'Development Status :: 4 - Beta',
+          'Development Status :: 5 - Production/Stable',
           'Intended Audience :: Developers',
           'License :: OSI Approved :: Apache Software License',
           'Programming Language :: Python :: 3',
           'Topic :: System :: Distributed Computing',
-          'Topic :: System :: Networking'
+          'Topic :: System :: Networking',
+          'Topic :: Utilities'
       ])

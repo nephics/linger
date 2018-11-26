@@ -21,7 +21,7 @@ import tornado.web
 from tornado.gen import coroutine
 from tornado.options import (define, options, parse_config_file)
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 
 define('config', type=str, help='path to config file',

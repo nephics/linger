@@ -16,7 +16,7 @@ setup(name='linger',
       packages=['linger'],
       entry_points={
         'console_scripts': [
-          'linger = linger:main'
+          'linger = linger.__main__:main'
         ],
       },
       install_requires=['tornado>=4.5.2'],

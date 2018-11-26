@@ -59,7 +59,7 @@ When subscribing a channel to a topic, you can set the message priority, retenti
 
 Install the `linger` script in `/usr/local/bin` (on Linux and OS X) with the following pip command:
 
-    pip install https://github.com/nephics/linger/archive/master.zip
+    pip install linger
 
 This will also ensure that the dependency package `tornado` is installed.
 

@@ -7,7 +7,7 @@ from tornado.testing import (AsyncTestCase, AsyncHTTPTestCase, gen_test,
                              main as testing_main)
 from tornado.options import options
 
-import linger
+from linger import linger
 
 options.logging = None
 
